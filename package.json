@@ -1,6 +1,6 @@
 {
   "name": "geo-guard-ai",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "Geo-restriction for AI CLIs: check country by IP at launch and before every prompt (Claude Code)",
   "bin": {
     "geo-guard": "bin/geo-guard.js"
