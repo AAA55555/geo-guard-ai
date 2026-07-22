@@ -45,7 +45,11 @@ export function configPath(): string {
   return path.join(configDir(), 'config.json')
 }
 
-export function parseAllowed(value: unknown): string[] {
+/** ISO 3166-1 alpha-2 (matches what geo providers return). */
+const ISO2 = /^[A-Z]{2}$/
+
+/** Raw country tokens uppercased; does not validate ISO shape. */
+export function countryTokens(value: unknown): string[] {
   if (Array.isArray(value)) {
     return value.map(v => String(v).trim().toUpperCase()).filter(Boolean)
   }
@@ -56,6 +60,23 @@ export function parseAllowed(value: unknown): string[] {
       .filter(Boolean)
   }
   return [...DEFAULT_CONFIG.allowed]
+}
+
+/** Tokens that are not ISO alpha-2 (e.g. SPAIN, ESP, empty junk). */
+export function invalidCountryTokens(value: unknown): string[] {
+  return countryTokens(value).filter(code => !ISO2.test(code))
+}
+
+/** Valid ISO alpha-2 codes only, deduped. */
+export function parseAllowed(value: unknown): string[] {
+  const seen = new Set<string>()
+  const out: string[] = []
+  for (const code of countryTokens(value)) {
+    if (!ISO2.test(code) || seen.has(code)) continue
+    seen.add(code)
+    out.push(code)
+  }
+  return out
 }
 
 export function readConfigFile(): GeoGuardConfigFile {

@@ -32,6 +32,17 @@ describe('parseAllowed', () => {
     assert.deepEqual(parseAllowed('es, pt'), ['ES', 'PT'])
     assert.deepEqual(parseAllowed(['es', 'PT']), ['ES', 'PT'])
   })
+
+  test('keeps only ISO alpha-2, dedupes', () => {
+    assert.deepEqual(parseAllowed('ES,SPAIN,ESP,pt,ES'), ['ES', 'PT'])
+    assert.deepEqual(parseAllowed(['spain', 'XX', 'PT']), ['XX', 'PT'])
+  })
+
+  test('invalidCountryTokens lists non-ISO entries', () => {
+    const { invalidCountryTokens } = require('../dist/config')
+    assert.deepEqual(invalidCountryTokens('ES,SPAIN,ESP'), ['SPAIN', 'ESP'])
+    assert.deepEqual(invalidCountryTokens('es, pt'), [])
+  })
 })
 
 describe('parseTimeoutSeconds', () => {
@@ -433,5 +444,174 @@ describe('i18n locale detection', () => {
     setLocale({ GEO_GUARD_LANG: 'ru' })
     const ru = Object.keys(msg())
     assert.deepEqual(new Set(en), new Set(ru))
+  })
+})
+
+describe('resolveRealBin', () => {
+  const { resolveRealBin } = require('../dist/resolve-bin')
+  let tmpDir
+  let prevPath
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-bin-'))
+    prevPath = process.env.PATH
+    const fakeClaude = path.join(tmpDir, 'claude')
+    fs.writeFileSync(fakeClaude, '#!/bin/sh\necho ok\n')
+    fs.chmodSync(fakeClaude, 0o755)
+    process.env.PATH = `${tmpDir}${path.delimiter}${prevPath || ''}`
+  })
+  after(() => {
+    process.env.PATH = prevPath
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('finds command on PATH', () => {
+    const resolved = resolveRealBin('claude')
+    assert.equal(resolved, fs.realpathSync(path.join(tmpDir, 'claude')))
+  })
+
+  test('GEO_GUARD_REAL_BIN wins', () => {
+    const explicit = path.join(tmpDir, 'claude')
+    const resolved = resolveRealBin('other', { realBinEnv: explicit })
+    assert.equal(resolved, fs.realpathSync(explicit))
+  })
+
+  test('skips selfEntry named geo-guard', () => {
+    const self = path.join(tmpDir, 'geo-guard')
+    fs.writeFileSync(self, '#!/bin/sh\n')
+    fs.chmodSync(self, 0o755)
+    const resolved = resolveRealBin('claude', { selfEntry: self })
+    assert.equal(path.basename(resolved), 'claude')
+  })
+})
+
+describe('claude-hook install/uninstall', () => {
+  const { installClaudeHook, uninstallClaudeHook, isOurHook, settingsPath } = require('../dist/claude-hook')
+  let tmpHome
+  let prevHome
+  let prevUserProfile
+
+  before(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-home-'))
+    prevHome = process.env.HOME
+    prevUserProfile = process.env.USERPROFILE
+    process.env.HOME = tmpHome
+    process.env.USERPROFILE = tmpHome
+  })
+  after(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = prevUserProfile
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  test('install writes our hook; uninstall removes only ours', () => {
+    const settingsFile = settingsPath()
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true })
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        {
+          hooks: {
+            UserPromptSubmit: [
+              { hooks: [{ type: 'command', command: 'echo foreign-hook' }] },
+            ],
+          },
+        },
+        null,
+        2,
+      ),
+    )
+
+    const installed = installClaudeHook()
+    assert.equal(installed.command, 'geo-guard check')
+    const afterInstall = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+    const commands = afterInstall.hooks.UserPromptSubmit.flatMap(m =>
+      (m.hooks || []).map(h => h.command),
+    )
+    assert.ok(commands.includes('geo-guard check'))
+    assert.ok(commands.includes('echo foreign-hook'))
+    assert.ok(isOurHook({ command: 'geo-guard check' }))
+
+    const un = uninstallClaudeHook()
+    assert.equal(un.changed, true)
+    const afterUninstall = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+    const left = afterUninstall.hooks.UserPromptSubmit.flatMap(m =>
+      (m.hooks || []).map(h => h.command),
+    )
+    assert.deepEqual(left, ['echo foreign-hook'])
+  })
+})
+
+describe('detectCountry', () => {
+  const { detectCountry, fetchCountry } = require('../dist/geo')
+
+  test('empty providers => null', async () => {
+    assert.equal(await detectCountry({ allowed: ['ES'], timeoutMs: 1000, providers: [] }), null)
+  })
+
+  test('fetchCountry rejects non-ISO body', async () => {
+    const prevFetch = globalThis.fetch
+    globalThis.fetch = async () =>
+      ({
+        ok: true,
+        text: async () => 'SPAIN',
+      })
+    try {
+      assert.equal(await fetchCountry('https://example.test/country', 1000), null)
+    } finally {
+      globalThis.fetch = prevFetch
+    }
+  })
+
+  test('detectCountry returns first valid provider answer', async () => {
+    const prevFetch = globalThis.fetch
+    globalThis.fetch = async url => {
+      if (String(url).includes('slow')) {
+        await new Promise(r => setTimeout(r, 200))
+        return { ok: true, text: async () => 'US' }
+      }
+      return { ok: true, text: async () => 'es\n' }
+    }
+    try {
+      const country = await detectCountry({
+        allowed: ['ES'],
+        timeoutMs: 1000,
+        providers: ['https://example.test/fast', 'https://example.test/slow'],
+      })
+      assert.equal(country, 'ES')
+    } finally {
+      globalThis.fetch = prevFetch
+    }
+  })
+})
+
+describe('setup rejects invalid country codes', () => {
+  const { parseArgs } = require('../dist/setup')
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+
+  test('parseArgs reads --countries', () => {
+    assert.deepEqual(parseArgs(['--yes', '--countries', 'ES,PT', '--no-hook', '--no-alias']).countries, 'ES,PT')
+  })
+
+  test('setup --countries SPAIN exits non-zero', () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-setup-'))
+    try {
+      const r = spawnSync(process.execPath, [cli, 'setup', '--yes', '--countries', 'SPAIN', '--no-hook', '--no-alias'], {
+        env: {
+          ...process.env,
+          GEO_GUARD_CONFIG_DIR: tmp,
+          GEO_GUARD_CONFIG_FILE: path.join(tmp, 'config.json'),
+          GEO_GUARD_RC: path.join(tmp, '.zshrc'),
+          GEO_GUARD_LANG: 'en',
+        },
+        encoding: 'utf8',
+      })
+      assert.notEqual(r.status, 0)
+      assert.match(r.stderr + r.stdout, /Invalid country code/i)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
   })
 })

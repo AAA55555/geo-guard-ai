@@ -25,6 +25,8 @@ export type Messages = {
   unsupportedShellWithList: (shell: string, list: string) => string
   unsupportedShell: (shell: string) => string
   emptyCountryList: () => string
+  invalidCountryCodes: (codes: string) => string
+  postinstallHint: () => string
 
   // --- setup: prompts ---
   promptCountries: () => string
@@ -124,6 +126,9 @@ Examples:
   unsupportedShellWithList: (shell, list) => `Unsupported shell: ${shell}. Available: ${list}`,
   unsupportedShell: shell => `Unsupported shell: ${shell}`,
   emptyCountryList: () => 'Country list is empty',
+  invalidCountryCodes: codes =>
+    `Invalid country code(s): ${codes}. Use ISO 3166-1 alpha-2 (e.g. ES, PT)`,
+  postinstallHint: () => 'run  geo-guard setup',
 
   promptCountries: () => 'Allowed countries (ISO, comma-separated)',
   promptInstallHook: () => 'Install the Claude Code hook (UserPromptSubmit)?',
@@ -225,6 +230,9 @@ uninstall options:
   unsupportedShellWithList: (shell, list) => `Неподдерживаемый shell: ${shell}. Доступны: ${list}`,
   unsupportedShell: shell => `Неподдерживаемый shell: ${shell}`,
   emptyCountryList: () => 'Список стран пуст',
+  invalidCountryCodes: codes =>
+    `Некорректный код(ы) страны: ${codes}. Нужен ISO 3166-1 alpha-2 (например ES, PT)`,
+  postinstallHint: () => 'запусти  geo-guard setup',
 
   promptCountries: () => 'Разрешённые страны (ISO, через запятую)',
   promptInstallHook: () => 'Установить hook Claude Code (UserPromptSubmit)?',

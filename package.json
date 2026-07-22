@@ -1,7 +1,7 @@
 {
   "name": "geo-guard-ai",
   "version": "0.0.2",
-  "description": "Гео-ограничение для AI CLI: проверка страны по IP на запуске и перед каждым промптом (Claude Code)",
+  "description": "Geo-restriction for AI CLIs: check country by IP at launch and before every prompt (Claude Code)",
   "bin": {
     "geo-guard": "bin/geo-guard.js"
   },
@@ -14,10 +14,10 @@
   ],
   "scripts": {
     "build": "tsc",
-    "prepare": "husky && npm run build",
+    "prepare": "npm run build && (husky || true)",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.cjs",
-    "postinstall": "node -e \"console.log('\\ngeo-guard-ai: запусти  geo-guard setup\\n')\"",
+    "postinstall": "node ./bin/postinstall.js",
     "preuninstall": "node ./bin/preuninstall.js"
   },
   "engines": {

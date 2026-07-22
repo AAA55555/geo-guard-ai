@@ -160,7 +160,7 @@ Env overrides the file:
 | `GEO_GUARD_SHELL` / `GEO_GUARD_RC` | shell / file for the alias. If `GEO_GUARD_RC` is set, `uninstall` works **only** on that file and doesn't touch system rc files |
 | `GEO_GUARD_LANG` | force the CLI language (`en`, `ru`), overriding the auto-detected machine locale |
 
-A provider must return a two-letter ISO country code as text (`ES`). A response not matching `^[A-Za-z]{2}$` is ignored. An empty `providers` list (`[]`) means "no providers" → country can't be determined → block.
+A provider must return a two-letter ISO country code as text (`ES`). A response not matching `^[A-Za-z]{2}$` is ignored. `allowed` also accepts **only** ISO alpha-2 (`ES`, `PT`); values like `SPAIN` / `ESP` are rejected by `setup` and dropped when loading the config. An empty `providers` list (`[]`) means "no providers" → country can't be determined → block.
 
 ## Uninstall
 

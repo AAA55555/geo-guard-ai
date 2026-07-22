@@ -1,4 +1,10 @@
-import { writeConfig, parseAllowed, DEFAULT_CONFIG, configPath } from './config'
+import {
+  writeConfig,
+  parseAllowed,
+  invalidCountryTokens,
+  DEFAULT_CONFIG,
+  configPath,
+} from './config'
 import { installClaudeHook } from './claude-hook'
 import {
   aliasConflictFor,
@@ -192,6 +198,10 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     }
   }
 
+  const invalid = invalidCountryTokens(countries)
+  if (invalid.length > 0) {
+    throw new Error(msg().invalidCountryCodes(invalid.join(', ')))
+  }
   const allowed = parseAllowed(countries)
   if (allowed.length === 0) {
     throw new Error(msg().emptyCountryList())
