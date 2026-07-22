@@ -23,6 +23,11 @@ export async function runCheck(): Promise<void> {
       process.exit(2)
     }
 
+    // Silent on success when not a TTY (Claude hook). In an interactive terminal —
+    // print confirmation so `geo-guard check` doesn't look like a no-op.
+    if (process.stderr.isTTY) {
+      console.error(msg().wrapGeoCheckOk(country))
+    }
     process.exit(0)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
