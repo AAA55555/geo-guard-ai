@@ -1,0 +1,48 @@
+{
+  "name": "geo-guard-ai",
+  "version": "0.0.2",
+  "description": "Гео-ограничение для AI CLI: проверка страны по IP на запуске и перед каждым промптом (Claude Code)",
+  "bin": {
+    "geo-guard": "bin/geo-guard.js"
+  },
+  "files": [
+    "bin",
+    "dist",
+    "README.md",
+    "README.ru.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "prepare": "husky && npm run build",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run build && node --test test/*.test.cjs",
+    "postinstall": "node -e \"console.log('\\ngeo-guard-ai: запусти  geo-guard setup\\n')\"",
+    "preuninstall": "node ./bin/preuninstall.js"
+  },
+  "engines": {
+    "node": ">=18.20.0 <19.0.0 || >=20.12.0"
+  },
+  "keywords": [
+    "geo",
+    "claude",
+    "claude-code",
+    "hook",
+    "vpn"
+  ],
+  "author": "AAA55555",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AAA55555/geo-guard-ai.git"
+  },
+  "bugs": {
+    "url": "https://github.com/AAA55555/geo-guard-ai/issues"
+  },
+  "homepage": "https://github.com/AAA55555/geo-guard-ai#readme",
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "husky": "^9.1.7",
+    "typescript": "^5.8.3"
+  }
+}
