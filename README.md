@@ -1,5 +1,7 @@
 # geo-guard-ai
 
+[![npm version](https://img.shields.io/npm/v/geo-guard-ai.svg)](https://www.npmjs.com/package/geo-guard-ai)
+
 **English** · [Русский](./README.ru.md)
 
 **Geo-restriction for AI CLIs.** Lets Claude Code (or any other command) start only if your external IP resolves to an allowed country. If you're not where you should be, it blocks you before a single prompt goes out.

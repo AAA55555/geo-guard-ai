@@ -1,5 +1,7 @@
 # geo-guard-ai
 
+[![npm version](https://img.shields.io/npm/v/geo-guard-ai.svg)](https://www.npmjs.com/package/geo-guard-ai)
+
 [English](./README.md) · **Русский**
 
 **Гео-ограничение для AI CLI.** Разрешает запуск Claude Code (или другой команды) только если твой внешний IP резолвится в разрешённую страну. Если ты не там, где нужно, — блокирует ещё до отправки промпта.
