@@ -21,7 +21,7 @@ export type GeoGuardConfigFile = Partial<{
 }>
 
 export const DEFAULT_CONFIG: GeoGuardConfig = Object.freeze({
-  allowed: ['ES'],
+  allowed: ['NL'],
   timeoutMs: 5000,
   providers: ['https://ifconfig.co/country-iso', 'https://ipinfo.io/country'],
 })

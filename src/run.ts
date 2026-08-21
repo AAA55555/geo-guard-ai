@@ -28,6 +28,12 @@ export async function runCheck(): Promise<void> {
     if (process.stderr.isTTY) {
       console.error(msg().wrapGeoCheckOk(country))
     }
+    // Control-JSON for hook hosts (Claude Code, Cursor), piped stdout only — never
+    // in a TTY. Exact bytes, no trailing newline: Cursor's fallback parser requires
+    // the string to end in '}' (see PLAN-cursor-hook.md 7.2 / 2.4).
+    if (!process.stdout.isTTY) {
+      process.stdout.write('{"continue":true}')
+    }
     process.exit(0)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)

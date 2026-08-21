@@ -544,6 +544,99 @@ describe('claude-hook install/uninstall', () => {
   })
 })
 
+describe('cursor-hook install/uninstall', () => {
+  const {
+    installCursorHook,
+    uninstallCursorHook,
+    cursorHooksPath,
+  } = require('../dist/cursor-hook')
+  const { hookCommand } = require('../dist/hook-shared')
+  let tmpHome
+  let prevHome
+  let prevUserProfile
+
+  before(() => {
+    tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-cursor-home-'))
+    prevHome = process.env.HOME
+    prevUserProfile = process.env.USERPROFILE
+    process.env.HOME = tmpHome
+    process.env.USERPROFILE = tmpHome
+  })
+  after(() => {
+    if (prevHome === undefined) delete process.env.HOME
+    else process.env.HOME = prevHome
+    if (prevUserProfile === undefined) delete process.env.USERPROFILE
+    else process.env.USERPROFILE = prevUserProfile
+    fs.rmSync(tmpHome, { recursive: true, force: true })
+  })
+
+  test('install on a missing file creates version:1 and our entry', () => {
+    const file = cursorHooksPath()
+    assert.equal(fs.existsSync(file), false)
+    const installed = installCursorHook()
+    assert.equal(installed.command, hookCommand())
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.equal(data.version, 1)
+    assert.ok(data.hooks.beforeSubmitPrompt.some(h => h.command === hookCommand()))
+    assert.equal(data.hooks.beforeSubmitPrompt.find(h => h.command === hookCommand()).failClosed, true)
+
+    const un = uninstallCursorHook()
+    assert.equal(un.changed, true)
+  })
+
+  test('merges with foreign content, preserves version, dedupes on repeat install', () => {
+    const file = cursorHooksPath()
+    const existingBak = `${file}.bak`
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        { version: 7, hooks: { sessionStart: [{ command: 'echo hi' }] } },
+        null,
+        2,
+      ),
+    )
+    // Simulate a pre-existing .bak from another tool: must not be overwritten.
+    fs.writeFileSync(existingBak, 'not-ours')
+
+    installCursorHook()
+    installCursorHook() // idempotency: second call must not duplicate
+
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.equal(data.version, 7)
+    assert.ok(data.hooks.sessionStart.some(h => h.command === 'echo hi'))
+    const ours = data.hooks.beforeSubmitPrompt.filter(h => h.command === hookCommand())
+    assert.equal(ours.length, 1)
+
+    assert.equal(fs.readFileSync(existingBak, 'utf8'), 'not-ours')
+
+    const un = uninstallCursorHook()
+    assert.equal(un.changed, true)
+    const afterUninstall = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.ok(afterUninstall.hooks.sessionStart.some(h => h.command === 'echo hi'))
+    assert.equal(afterUninstall.hooks.beforeSubmitPrompt, undefined)
+
+    fs.unlinkSync(existingBak)
+  })
+
+  test('uninstall on a missing file is a no-op, creates nothing', () => {
+    const file = cursorHooksPath()
+    if (fs.existsSync(file)) fs.unlinkSync(file)
+    const un = uninstallCursorHook()
+    assert.equal(un.changed, false)
+    assert.equal(fs.existsSync(file), false)
+  })
+})
+
+describe('hook command invariant', () => {
+  test('claude-hook and hook-shared use the exact same command string', () => {
+    const { hookCommand: fromClaude } = require('../dist/claude-hook')
+    const { hookCommand: shared } = require('../dist/hook-shared')
+    assert.equal(fromClaude(), shared())
+    assert.equal(fromClaude(), 'geo-guard check')
+  })
+})
+
 describe('detectCountry', () => {
   const { detectCountry, fetchCountry } = require('../dist/geo')
 
@@ -613,5 +706,38 @@ describe('setup rejects invalid country codes', () => {
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true })
     }
+  })
+})
+
+describe('runCheck stdout contract', () => {
+  // Real subprocess, real process.exit — fetch is stubbed via a --require
+  // preload fixture so this never touches the network (matches the
+  // detectCountry tests' in-process fetch mocking, just out-of-process).
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  const mockFetch = path.join(__dirname, 'fixtures', 'mock-fetch.cjs')
+
+  function runCheckSubprocess(allowed) {
+    return spawnSync(process.execPath, [cli, 'check'], {
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--require ${mockFetch}`,
+        GEO_GUARD_ALLOWED: allowed,
+        GEO_GUARD_PROVIDERS: 'https://example.test/fake',
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  test('on success, non-TTY stdout is exactly {"continue":true}, no trailing newline', () => {
+    const r = runCheckSubprocess('RU')
+    assert.equal(r.status, 0)
+    assert.equal(r.stdout, '{"continue":true}')
+  })
+
+  test('on block, stdout is empty and exit code is 2', () => {
+    const r = runCheckSubprocess('XX')
+    assert.equal(r.status, 2)
+    assert.equal(r.stdout, '')
   })
 })

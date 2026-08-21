@@ -3,6 +3,9 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { msg } from './i18n'
+import { hookCommand, isOurHook } from './hook-shared'
+
+export { hookCommand, isOurHook }
 
 type ClaudeHook = Readonly<{
   type?: string
@@ -28,10 +31,6 @@ export function settingsPath(): string {
   return path.join(os.homedir(), '.claude', 'settings.json')
 }
 
-export function hookCommand(): string {
-  return 'geo-guard check'
-}
-
 function readSettings(): { file: string; settings: ClaudeSettings } {
   const file = settingsPath()
   if (!fs.existsSync(file)) return { file, settings: {} }
@@ -53,18 +52,6 @@ function writeSettings(file: string, settings: ClaudeSettings): void {
     fs.copyFileSync(file, bak)
   }
   fs.writeFileSync(file, `${JSON.stringify(settings, null, 2)}\n`)
-}
-
-export function isOurHook(hook: ClaudeHook | null | undefined): boolean {
-  if (!hook || typeof hook.command !== 'string') return false
-  const cmd = hook.command
-  // Anchor on the left (line start / space / slash) so we don't hit foreign commands
-  // like 'my-geo-check.sh' or 'echo geo-checkpoint'. The first branch is our current
-  // command, the second is the legacy geo-check script from older versions.
-  return (
-    /(^|[/\\\s])geo-guard(\.cmd)?\s+check(\s|$)/.test(cmd) ||
-    /(^|[/\\\s])geo-check(\.[A-Za-z0-9]+)?(\s|$)/.test(cmd)
-  )
 }
 
 function stripOurHooks(settings: ClaudeSettings): ClaudeSettings {

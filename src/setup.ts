@@ -1,3 +1,7 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+
 import {
   writeConfig,
   parseAllowed,
@@ -6,6 +10,7 @@ import {
   configPath,
 } from './config'
 import { installClaudeHook } from './claude-hook'
+import { installCursorHook } from './cursor-hook'
 import {
   aliasConflictFor,
   detectShell,
@@ -25,7 +30,13 @@ export type SetupOptions = Readonly<{
   hook: boolean | null
   alias: boolean | null
   aliasName: string | null
+  cursor: boolean | null
 }>
+
+/** Whether `~/.cursor` exists — gate for the cursor-hook question in --yes mode. */
+function cursorDirExists(): boolean {
+  return fs.existsSync(path.join(os.homedir(), '.cursor'))
+}
 
 /** Alias name candidates for a collision in non-interactive mode. */
 const FALLBACK_ALIAS_NAMES = [DEFAULT_ALIAS_NAME, 'cc', 'ccg', 'geoclaude']
@@ -76,6 +87,7 @@ export function parseArgs(argv: string[]): SetupOptions {
     hook: boolean | null
     alias: boolean | null
     aliasName: string | null
+    cursor: boolean | null
   } = {
     yes: false,
     countries: null,
@@ -83,6 +95,7 @@ export function parseArgs(argv: string[]): SetupOptions {
     hook: null,
     alias: null,
     aliasName: null,
+    cursor: null,
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -111,6 +124,10 @@ export function parseArgs(argv: string[]): SetupOptions {
       opts.alias = false
     } else if (arg === '--alias') {
       opts.alias = true
+    } else if (arg === '--no-cursor') {
+      opts.cursor = false
+    } else if (arg === '--cursor') {
+      opts.cursor = true
     } else {
       throw new Error(msg().unknownSetupArg(arg))
     }
@@ -126,6 +143,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   let countries = opts.countries
   let wantHook = opts.hook
   let wantAlias = opts.alias
+  let wantCursor = opts.cursor
   let shell: ShellName = detectedShell
   let aliasName: string = opts.aliasName ?? DEFAULT_ALIAS_NAME
   let aliasSkipReason = ''
@@ -153,6 +171,11 @@ export async function runSetup(argv: string[] = []): Promise<void> {
       }
       if (wantHook === null) {
         wantHook = await prompt.askYesNo(msg().promptInstallHook(), {
+          defaultYes: true,
+        })
+      }
+      if (wantCursor === null && cursorDirExists()) {
+        wantCursor = await prompt.askYesNo(msg().promptInstallCursorHook(), {
           defaultYes: true,
         })
       }
@@ -185,6 +208,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   } else {
     countries = countries || DEFAULT_CONFIG.allowed.join(',')
     if (wantHook === null) wantHook = true
+    if (wantCursor === null) wantCursor = cursorDirExists()
     if (wantAlias === null) wantAlias = true
 
     if (wantAlias) {
@@ -217,6 +241,14 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     console.log(msg().hookCommandLine(hook.command))
   } else {
     console.log(msg().hookSkipped())
+  }
+
+  if (wantCursor) {
+    const cursorHook = installCursorHook()
+    console.log(msg().cursorHookInstalled(cursorHook.file))
+    console.log(msg().hookCommandLine(cursorHook.command))
+  } else {
+    console.log(msg().cursorHookSkipped())
   }
 
   if (wantAlias) {

@@ -1,7 +1,7 @@
 {
   "name": "geo-guard-ai",
   "version": "0.0.3",
-  "description": "Geo-restriction for AI CLIs: check country by IP at launch and before every prompt (Claude Code)",
+  "description": "Geo-restriction for AI CLIs: check country by IP at launch and before every prompt (Claude Code, Cursor)",
   "bin": {
     "geo-guard": "bin/geo-guard.js"
   },
@@ -17,6 +17,8 @@
     "prepare": "npm run build && (husky || true)",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node --test test/*.test.cjs",
+    "test:e2e": "npm run build && sh scripts/e2e.sh",
+    "test:pack": "npm run build && sh scripts/pack-check.sh",
     "postinstall": "node ./bin/postinstall.js",
     "preuninstall": "node ./bin/preuninstall.js"
   },
@@ -27,8 +29,10 @@
     "geo",
     "claude",
     "claude-code",
+    "cursor",
     "hook",
-    "vpn"
+    "vpn",
+    "ai"
   ],
   "author": "AAA55555",
   "license": "MIT",

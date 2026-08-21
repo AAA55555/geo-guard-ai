@@ -31,6 +31,7 @@ export type Messages = {
   // --- setup: prompts ---
   promptCountries: () => string
   promptInstallHook: () => string
+  promptInstallCursorHook: () => string
   promptAddAlias: (name: string, shell: string) => string
   promptShell: (list: string) => string
   promptAliasName: () => string
@@ -45,6 +46,8 @@ export type Messages = {
   hookInstalled: (file: string) => string
   hookCommandLine: (command: string) => string
   hookSkipped: () => string
+  cursorHookInstalled: (file: string) => string
+  cursorHookSkipped: () => string
   aliasInstalled: (file: string) => string
   aliasClaudeTaken: (name: string) => string
   aliasRunVia: (name: string) => string
@@ -73,6 +76,7 @@ export type Messages = {
   unknownUninstallArg: (arg: string) => string
   hookRemoved: (file: string) => string
   hookNotFound: () => string
+  cursorHookNotFound: () => string
   aliasRemoved: (file: string) => string
   aliasBlocksNotFound: () => string
   aliasBlockManuallyEdited: (file: string) => string
@@ -106,6 +110,7 @@ setup options:
   -c, --countries ES,PT     allowed countries
   --shell zsh|bash|fish|powershell
   --hook / --no-hook
+  --cursor / --no-cursor    install the Cursor hook (~/.cursor/hooks.json)
   --alias / --no-alias
   --alias-name cc           alias name (default claude; on collision suggests another)
 
@@ -132,6 +137,7 @@ Examples:
 
   promptCountries: () => 'Allowed countries (ISO, comma-separated)',
   promptInstallHook: () => 'Install the Claude Code hook (UserPromptSubmit)?',
+  promptInstallCursorHook: () => 'Install the Cursor hook (beforeSubmitPrompt, ~/.cursor/hooks.json)?',
   promptAddAlias: (name, shell) => `Add alias ${name} → geo-guard claude to ${shell}?`,
   promptShell: list => `Shell for the alias (${list})`,
   promptAliasName: () => 'Name for the geo-guard alias (empty — skip alias)',
@@ -144,6 +150,8 @@ Examples:
   hookInstalled: file => `✅ Claude hook → ${file}`,
   hookCommandLine: command => `   command: ${command}`,
   hookSkipped: () => '⏭  Claude hook skipped',
+  cursorHookInstalled: file => `✅ Cursor hook → ${file}`,
+  cursorHookSkipped: () => '⏭  Cursor hook skipped',
   aliasInstalled: file => `✅ alias → ${file}`,
   aliasClaudeTaken: name => `   'claude' was taken by your own alias — using '${name}'.`,
   aliasRunVia: name => `   Run Claude Code via: ${name} …`,
@@ -176,6 +184,7 @@ Examples:
   unknownUninstallArg: arg => `Unknown uninstall argument: ${arg}`,
   hookRemoved: file => `✅ hook removed from ${file}`,
   hookNotFound: () => '⏭  our hook was not found in settings.json',
+  cursorHookNotFound: () => '⏭  our hook was not found in ~/.cursor/hooks.json',
   aliasRemoved: file => `✅ alias removed from ${file}`,
   aliasBlocksNotFound: () => '⏭  no geo-guard alias blocks found in rc files',
   aliasBlockManuallyEdited: file =>
@@ -210,6 +219,7 @@ setup options:
   -c, --countries ES,PT     разрешённые страны
   --shell zsh|bash|fish|powershell
   --hook / --no-hook
+  --cursor / --no-cursor    установить hook Cursor (~/.cursor/hooks.json)
   --alias / --no-alias
   --alias-name cc           имя alias (дефолт claude; при коллизии предложит другое)
 
@@ -236,6 +246,7 @@ uninstall options:
 
   promptCountries: () => 'Разрешённые страны (ISO, через запятую)',
   promptInstallHook: () => 'Установить hook Claude Code (UserPromptSubmit)?',
+  promptInstallCursorHook: () => 'Установить hook Cursor (beforeSubmitPrompt, ~/.cursor/hooks.json)?',
   promptAddAlias: (name, shell) => `Добавить alias ${name} → geo-guard claude в ${shell}?`,
   promptShell: list => `Shell для alias (${list})`,
   promptAliasName: () => 'Имя для geo-guard alias (пусто — пропустить alias)',
@@ -248,6 +259,8 @@ uninstall options:
   hookInstalled: file => `✅ Claude hook → ${file}`,
   hookCommandLine: command => `   command: ${command}`,
   hookSkipped: () => '⏭  Claude hook пропущен',
+  cursorHookInstalled: file => `✅ Cursor hook → ${file}`,
+  cursorHookSkipped: () => '⏭  Cursor hook пропущен',
   aliasInstalled: file => `✅ alias → ${file}`,
   aliasClaudeTaken: name => `   'claude' был занят твоим alias — используем '${name}'.`,
   aliasRunVia: name => `   Запускай Claude Code через: ${name} …`,
@@ -280,6 +293,7 @@ uninstall options:
   unknownUninstallArg: arg => `Неизвестный аргумент uninstall: ${arg}`,
   hookRemoved: file => `✅ hook убран из ${file}`,
   hookNotFound: () => '⏭  нашего hook в settings.json не найдено',
+  cursorHookNotFound: () => '⏭  нашего hook в ~/.cursor/hooks.json не найдено',
   aliasRemoved: file => `✅ alias убран из ${file}`,
   aliasBlocksNotFound: () => '⏭  наших alias-блоков в rc не найдено',
   aliasBlockManuallyEdited: file =>

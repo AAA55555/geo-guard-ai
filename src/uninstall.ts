@@ -2,6 +2,7 @@ import fs from 'node:fs'
 
 import { configDir, configPath } from './config'
 import { uninstallClaudeHook } from './claude-hook'
+import { uninstallCursorHook } from './cursor-hook'
 import { uninstallAliasesEverywhere } from './shell-alias'
 import { msg } from './i18n'
 
@@ -51,11 +52,13 @@ function parseUninstallArgs(argv: string[]): UninstallOptions {
 
 /**
  * Removes only what geo-guard-ai added:
- * - the UserPromptSubmit hook with geo-guard check / geo-check
+ * - the UserPromptSubmit hook with geo-guard check / geo-check in ~/.claude/settings.json
+ * - the beforeSubmitPrompt hook in ~/.cursor/hooks.json
  * - the alias marker block (and unmanaged claude-geo / geo-guard claude lines)
  * - config.json (+ the empty config directory)
  *
- * Leaves untouched: other aliases (cc/c), the rest of settings.json, settings.json.bak.
+ * Leaves untouched: other aliases (cc/c), the rest of settings.json / hooks.json,
+ * and both .bak files.
  */
 export async function runUninstall(argv: string[] = []): Promise<void> {
   const opts = parseUninstallArgs(argv)
@@ -66,6 +69,13 @@ export async function runUninstall(argv: string[] = []): Promise<void> {
     log(quiet, msg().hookRemoved(hook.file))
   } else {
     log(quiet, msg().hookNotFound())
+  }
+
+  const cursorHook = uninstallCursorHook()
+  if (cursorHook.changed) {
+    log(quiet, msg().hookRemoved(cursorHook.file))
+  } else {
+    log(quiet, msg().cursorHookNotFound())
   }
 
   const aliasResults = uninstallAliasesEverywhere()
