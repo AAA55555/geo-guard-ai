@@ -86,6 +86,14 @@ geo-guard setup --yes --no-cursor   # skip
 
 Re-running `setup` **does not reset** custom `timeoutMs` / `providers` in the config — it only updates `allowed`.
 
+### Change allowed countries
+
+```bash
+geo-guard setup -y -c NL
+```
+
+Hooks and the alias stay as they are (re-running `setup` is idempotent). For a one-off check without writing the config: `GEO_GUARD_ALLOWED=NL geo-guard check`.
+
 ## Alias and collisions
 
 The point of installing is to route the familiar `claude` command through the check. To do that, a marker-delimited block is written to your rc:
