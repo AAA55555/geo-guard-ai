@@ -308,10 +308,12 @@ echo GEOGUARD_SMOKE_RAN
     # --- 4e. status reports what is installed, and writes nothing -------------
     $before = Get-TreeSnapshot $sandbox
     $r = Invoke-Geo @('status')
-    # Exit 1, and correctly so: step 1 installed with --no-cursor, so the Cursor
-    # hook is genuinely absent. What matters here is that the two things that
-    # ARE installed are found — on win32 paths, through the PowerShell profile.
-    Assert-Exit $r 1 'status must exit 1 while the Cursor hook is deliberately absent'
+    # Exit 0: this sandbox has no %USERPROFILE%\.cursor at all, and setup skips
+    # the Cursor hook on a machine without Cursor — so nothing is missing. What
+    # matters here is that the two things that ARE installed are found, on win32
+    # paths, through the PowerShell profile.
+    Assert-Exit $r 0 'status must exit 0 when everything setup installs is in place'
+    Assert-Contains $r.StdOut 'no hook needed' 'status should not demand a Cursor hook on a machine without Cursor'
     # The profile path is the win32-specific part: status has to look in
     # Documents\PowerShell, not at a POSIX rc. The alias line itself is
     # normalized ("alias 'claude' -> geo-guard claude"), so the raw
