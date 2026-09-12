@@ -107,7 +107,12 @@ export async function runUninstall(argv: string[] = []): Promise<void> {
 
   if (!quiet) {
     if (aliases.length > 0) {
-      console.log(msg().reloadRc(aliases[0]?.file ?? ''))
+      const file = aliases[0]?.file ?? ''
+      if (file.toLowerCase().endsWith('.ps1')) {
+        console.log(msg().reloadRcPowershell(file))
+      } else {
+        console.log(msg().reloadRc(file))
+      }
     }
     console.log(msg().uninstallDone())
   }

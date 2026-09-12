@@ -21,6 +21,7 @@ export type Messages = {
 
   // --- setup: arg parsing / validation ---
   unknownSetupArg: (arg: string) => string
+  promptInputEnded: () => string
   invalidAliasName: (name: string) => string
   unsupportedShellWithList: (shell: string, list: string) => string
   unsupportedShell: (shell: string) => string
@@ -77,9 +78,10 @@ export type Messages = {
   aliasForceHint: () => string
   aliasNameChangeSkipped: (kept: string, requested: string) => string
   hookCustomKept: () => string
-  aliasClaudeTaken: (name: string) => string
+  aliasNameTaken: (requested: string, used: string) => string
   aliasRunVia: (name: string) => string
   reloadRc: (file: string) => string
+  reloadRcPowershell: (file: string) => string
   macosBashProfileHint: () => string
   aliasSkippedReason: (reason: string) => string
   aliasSkipped: () => string
@@ -202,6 +204,8 @@ Examples:
 `,
 
   unknownSetupArg: arg => `Unknown setup argument: ${arg}`,
+  promptInputEnded: () =>
+    'Input ended before every question was answered — nothing was installed. For an unattended run use: geo-guard setup --yes',
   invalidAliasName: name =>
     `Invalid alias name: '${name}'. Allowed: letters, digits, _ - . and no spaces`,
   unsupportedShellWithList: (shell, list) => `Unsupported shell: ${shell}. Available: ${list}`,
@@ -259,9 +263,11 @@ Examples:
   aliasNameChangeSkipped: (kept, requested) =>
     `   Kept the existing name '${kept}', did not switch to '${requested}' — use --force-alias to rename.`,
   hookCustomKept: () => '   your own hook settings (timeout etc.) were kept',
-  aliasClaudeTaken: name => `   'claude' was taken by your own alias — using '${name}'.`,
+  aliasNameTaken: (requested, used) =>
+    `   '${requested}' is taken by an alias of your own — using '${used}' instead.`,
   aliasRunVia: name => `   Run Claude Code via: ${name} …`,
   reloadRc: file => `Reload your rc: source ${file}`,
+  reloadRcPowershell: file => `Reload your profile: . ${file}`,
   macosBashProfileHint: () =>
     '   macOS: a login bash shell reads ~/.bash_profile. If the alias is not picked up — add `source ~/.bashrc` to ~/.bash_profile.',
   aliasSkippedReason: reason => `⏭  alias skipped: ${reason}`,
@@ -398,6 +404,8 @@ uninstall options:
 `,
 
   unknownSetupArg: arg => `Неизвестный аргумент setup: ${arg}`,
+  promptInputEnded: () =>
+    'Ввод кончился раньше, чем закончились вопросы — ничего не установлено. Для запуска без участия человека: geo-guard setup --yes',
   invalidAliasName: name =>
     `Недопустимое имя alias: '${name}'. Разрешены буквы, цифры, _ - . без пробелов`,
   unsupportedShellWithList: (shell, list) => `Неподдерживаемый shell: ${shell}. Доступны: ${list}`,
@@ -455,9 +463,11 @@ uninstall options:
   aliasNameChangeSkipped: (kept, requested) =>
     `   Оставили имя '${kept}', не меняли на '${requested}' — для переименования: --force-alias.`,
   hookCustomKept: () => '   твои настройки хука (timeout и т.п.) сохранены',
-  aliasClaudeTaken: name => `   'claude' был занят твоим alias — используем '${name}'.`,
+  aliasNameTaken: (requested, used) =>
+    `   '${requested}' занят твоим собственным alias — используем '${used}'.`,
   aliasRunVia: name => `   Запускай Claude Code через: ${name} …`,
   reloadRc: file => `Перечитай rc: source ${file}`,
+  reloadRcPowershell: file => `Перечитай профиль: . ${file}`,
   macosBashProfileHint: () =>
     '   macOS: login-shell bash читает ~/.bash_profile. Если alias не подхватился — добавь `source ~/.bashrc` в ~/.bash_profile.',
   aliasSkippedReason: reason => `⏭  alias пропущен: ${reason}`,

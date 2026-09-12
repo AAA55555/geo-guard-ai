@@ -81,6 +81,12 @@ async function resolveAliasNameInteractive(
   return name
 }
 
+/** `source` is meaningless in PowerShell — there the profile is re-read with a dot. */
+function reloadHint(file: string): string {
+  if (file.toLowerCase().endsWith('.ps1')) return msg().reloadRcPowershell(file)
+  return msg().reloadRc(file)
+}
+
 /** Reports an alias block we deliberately left alone (custom flags or foreign content). */
 function reportPreservedAlias(alias: InstallAliasResult, requestedName: string): void {
   if (alias.preserved === 'custom') {
@@ -185,7 +191,8 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   let wantAlias = opts.alias
   let wantCursor = opts.cursor
   let shell: ShellName = detectedShell
-  let aliasName: string = opts.aliasName ?? DEFAULT_ALIAS_NAME
+  const requestedAliasName: string = opts.aliasName ?? DEFAULT_ALIAS_NAME
+  let aliasName: string = requestedAliasName
   let aliasSkipReason = ''
   let claudeCountries = opts.claudeCountries
   let cursorCountries = opts.cursorCountries
@@ -342,12 +349,17 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     } else {
       console.log(msg().aliasInstalled(alias.file))
       console.log(`   ${alias.snippet.split('\n')[1] || alias.snippet}`)
+      // Only when the name actually changed under us — saying "'claude' was
+      // taken" on an empty rc, or when the user asked for something else
+      // entirely, is simply untrue.
+      if (alias.name !== requestedAliasName) {
+        console.log(msg().aliasNameTaken(requestedAliasName, alias.name))
+      }
       if (alias.name !== DEFAULT_ALIAS_NAME) {
-        console.log(msg().aliasClaudeTaken(alias.name))
         console.log(msg().aliasRunVia(alias.name))
       }
       console.log('')
-      console.log(msg().reloadRc(alias.file))
+      console.log(reloadHint(alias.file))
       if (shell === 'bash' && process.platform === 'darwin') {
         console.log(msg().macosBashProfileHint())
       }
