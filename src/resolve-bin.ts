@@ -110,3 +110,19 @@ export function resolveRealBin(command: string, options: ResolveRealBinOptions =
 
   throw new Error(msg().binNotFoundInPath(command))
 }
+
+/**
+ * Whether a command is on PATH at all.
+ *
+ * setup and status use it to decide whether a cursor-agent alias is wanted:
+ * aliasing a command that isn't installed would turn "command not found" into
+ * our own "binary not found" error, which is a worse answer to the same
+ * question. Never throws — an unreadable PATH entry is not a reason to fail.
+ */
+export function commandExists(command: string): boolean {
+  try {
+    return whichAll(command).length > 0
+  } catch {
+    return false
+  }
+}

@@ -26,6 +26,10 @@ describe('setup rejects invalid country codes', () => {
           GEO_GUARD_CONFIG_FILE: path.join(tmp, 'config.json'),
           GEO_GUARD_RC: path.join(tmp, '.zshrc'),
           GEO_GUARD_LANG: 'en',
+          // Pinned empty: setup and status look for cursor-agent on PATH to decide
+          // whether that alias is wanted, and a test must not depend on whether the
+          // machine running it happens to have Cursor installed.
+          PATH: '',
         },
         encoding: 'utf8',
       })
@@ -64,6 +68,7 @@ describe('setup keeps an existing country list', () => {
         GEO_GUARD_CONFIG_DIR: tmpDir,
         GEO_GUARD_CONFIG_FILE: cfgFile(),
         GEO_GUARD_LANG: 'en',
+        PATH: '',
       },
       encoding: 'utf8',
     })
@@ -126,6 +131,7 @@ describe('interactive setup driven from a pipe', () => {
         GEO_GUARD_CONFIG_DIR: cfgDir,
         GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
         GEO_GUARD_LANG: 'en',
+        PATH: '',
       },
       encoding: 'utf8',
     })
@@ -200,6 +206,7 @@ describe('setup reports the alias name it actually used', () => {
           GEO_GUARD_CONFIG_DIR: cfgDir,
           GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
           GEO_GUARD_LANG: 'en',
+          PATH: '',
         },
         encoding: 'utf8',
       },
@@ -243,6 +250,7 @@ describe('setup reports the alias name it actually used', () => {
           GEO_GUARD_CONFIG_DIR: cfgDir,
           GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
           GEO_GUARD_LANG: 'en',
+          PATH: '',
         },
         encoding: 'utf8',
       },
@@ -251,5 +259,144 @@ describe('setup reports the alias name it actually used', () => {
     assert.equal(r.status, 0)
     assert.match(r.stdout, /Reload your profile: \. /)
     assert.doesNotMatch(r.stdout, /source /)
+  })
+})
+
+describe('setup wires cursor-agent through geo-guard', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let home
+  let cfgDir
+  let binDir
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-cagent-'))
+    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-cagent-cfg-'))
+    binDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-cagent-bin-'))
+  })
+  afterEach(() => {
+    for (const dir of [home, cfgDir, binDir]) {
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  /** A cursor-agent on PATH — the only thing that makes setup want the alias. */
+  function installFakeCursorAgent() {
+    const file = path.join(binDir, 'cursor-agent')
+    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(file, 0o755)
+  }
+
+  const rc = () => path.join(home, '.zshrc')
+  const rcText = () => (fs.existsSync(rc()) ? fs.readFileSync(rc(), 'utf8') : '')
+
+  function run(command, args = [], pathValue = binDir) {
+    return spawnSync(process.execPath, [cli, command, ...args], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: rc(),
+        GEO_GUARD_SHELL: 'zsh',
+        GEO_GUARD_CONFIG_DIR: cfgDir,
+        GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+        GEO_GUARD_PROVIDERS: '',
+        GEO_GUARD_LANG: 'en',
+        PATH: pathValue,
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  const setup = (args = []) => run('setup', ['--yes', '--no-hook', '--no-cursor', ...args])
+
+  test('the alias is installed when cursor-agent is on PATH', () => {
+    installFakeCursorAgent()
+
+    const r = setup()
+
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(rcText(), /alias cursor-agent="geo-guard cursor-agent"/)
+    assert.match(rcText(), /alias claude="geo-guard claude"/)
+  })
+
+  test('no cursor-agent on PATH, no alias — and setup says why', () => {
+    const r = setup([], '')
+
+    assert.equal(r.status, 0, r.stderr)
+    assert.doesNotMatch(rcText(), /cursor-agent/)
+    assert.match(r.stdout, /no cursor-agent on PATH/)
+  })
+
+  test('--no-cursor-alias declines it even when cursor-agent is there', () => {
+    installFakeCursorAgent()
+
+    assert.equal(setup(['--no-cursor-alias']).status, 0)
+
+    assert.doesNotMatch(rcText(), /cursor-agent/)
+    assert.match(rcText(), /alias claude=/)
+  })
+
+  test('--no-alias covers both aliases', () => {
+    installFakeCursorAgent()
+
+    assert.equal(setup(['--no-alias']).status, 0)
+
+    assert.equal(rcText().includes('geo-guard'), false)
+  })
+
+  test('a foreign cursor-agent alias is refused, not overwritten', () => {
+    installFakeCursorAgent()
+    fs.writeFileSync(rc(), 'alias cursor-agent="/opt/cursor-agent --yolo"\n')
+
+    const r = setup()
+
+    assert.equal(r.status, 0, r.stderr)
+    assert.match(r.stdout, /cursor-agent alias skipped/)
+    assert.match(rcText(), /alias cursor-agent="\/opt\/cursor-agent --yolo"/)
+  })
+
+  test('flags added by hand survive a second setup run', () => {
+    installFakeCursorAgent()
+    setup()
+    const edited = rcText().replace(
+      'alias cursor-agent="geo-guard cursor-agent"',
+      'alias cursor-agent="geo-guard cursor-agent --fullscreen"',
+    )
+    fs.writeFileSync(rc(), edited)
+
+    const r = setup()
+
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(rcText(), edited)
+    assert.match(r.stdout, /left untouched/)
+  })
+
+  test('a second run with nothing to change leaves the rc byte-for-byte', () => {
+    installFakeCursorAgent()
+    setup()
+    const before = rcText()
+
+    setup()
+
+    assert.equal(rcText(), before)
+  })
+
+  test('status reports the alias, and uninstall takes it away', () => {
+    installFakeCursorAgent()
+    setup()
+
+    const status = run('status')
+    assert.match(status.stdout, /cursor-agent alias:/)
+    assert.match(status.stdout, /alias 'cursor-agent' → geo-guard cursor-agent/)
+
+    const un = run('uninstall')
+    assert.equal(un.status, 0, un.stderr)
+    assert.equal(rcText().includes('geo-guard'), false)
+  })
+
+  test('status says the alias is not needed when cursor-agent is absent', () => {
+    const r = run('status', [], '')
+
+    assert.match(r.stdout, /cursor-agent is not installed here — no alias needed/)
   })
 })

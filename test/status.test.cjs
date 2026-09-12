@@ -22,6 +22,10 @@ function env(extra) {
     GEO_GUARD_CONFIG_DIR: path.join(home, 'cfg'),
     GEO_GUARD_CONFIG_FILE: path.join(home, 'cfg', 'config.json'),
     GEO_GUARD_LANG: 'en',
+    // Pinned empty: setup and status look for cursor-agent on PATH to decide
+    // whether that alias is wanted, and a test must not depend on whether the
+    // machine running it happens to have Cursor installed.
+    PATH: '',
     // No network from the test suite: every provider answers RU.
     NODE_OPTIONS: `--require ${mockFetch}`,
     ...extra,
@@ -281,6 +285,7 @@ describe('geo-guard status: the path line is printed once', () => {
         GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
         GEO_GUARD_PROVIDERS: '',
         GEO_GUARD_LANG: 'en',
+        PATH: '',
       },
       encoding: 'utf8',
     })
@@ -320,6 +325,7 @@ describe('geo-guard status: a block with no END marker', () => {
         GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
         GEO_GUARD_PROVIDERS: '',
         GEO_GUARD_LANG: 'en',
+        PATH: '',
       },
       encoding: 'utf8',
     })

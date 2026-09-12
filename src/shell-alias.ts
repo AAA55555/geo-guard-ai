@@ -2,7 +2,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 
-import { BEGIN_MARKER, END_MARKER } from './config'
+import {
+  BEGIN_MARKER,
+  END_MARKER,
+  CURSOR_BEGIN_MARKER,
+  CURSOR_END_MARKER,
+} from './config'
 import { msg } from './i18n'
 
 export type ShellName = 'zsh' | 'bash' | 'fish' | 'powershell'
@@ -11,30 +16,81 @@ export const DEFAULT_ALIAS_NAME = 'claude'
 
 const SUPPORTED_SHELLS: ShellName[] = ['zsh', 'bash', 'fish', 'powershell']
 
-/** Alias body for a specific shell and name. */
-function aliasBody(shell: ShellName, name: string): string {
-  if (shell === 'powershell') return `function ${name} { geo-guard claude @args }`
-  return `alias ${name}="geo-guard claude"`
+/**
+ * A command we can put behind an alias, and the marker block that alias lives
+ * in. Each target owns its own block, so one can be pristine while the other
+ * carries the user's flags, and removing one never disturbs the other.
+ */
+export type AliasTargetId = 'claude' | 'cursor-agent'
+
+export type AliasTarget = Readonly<{
+  id: AliasTargetId
+  /** The geo-guard subcommand the alias wraps. */
+  command: string
+  /** Alias name used unless the caller asks for another. */
+  defaultName: string
+  begin: string
+  end: string
+}>
+
+export const CLAUDE_TARGET: AliasTarget = Object.freeze({
+  id: 'claude',
+  command: 'claude',
+  defaultName: DEFAULT_ALIAS_NAME,
+  begin: BEGIN_MARKER,
+  end: END_MARKER,
+})
+
+/**
+ * Cursor's terminal client. The hook in ~/.cursor/hooks.json already blocks
+ * prompts inside it, but only once one is submitted — and cursor-agent renders
+ * a blocked submission as a status line its next redraw wipes. Wrapping the
+ * launch says it once, up front, in a way that stays on screen.
+ */
+export const CURSOR_AGENT_TARGET: AliasTarget = Object.freeze({
+  id: 'cursor-agent',
+  command: 'cursor-agent',
+  defaultName: 'cursor-agent',
+  begin: CURSOR_BEGIN_MARKER,
+  end: CURSOR_END_MARKER,
+})
+
+export const ALIAS_TARGETS: readonly AliasTarget[] = Object.freeze([
+  CLAUDE_TARGET,
+  CURSOR_AGENT_TARGET,
+])
+
+/** Alias body for a specific shell, name and wrapped command. */
+function aliasBody(shell: ShellName, name: string, command: string): string {
+  if (shell === 'powershell') return `function ${name} { geo-guard ${command} @args }`
+  return `alias ${name}="geo-guard ${command}"`
 }
 
 /** Our previous (unmanaged) variants — cleaned up on reinstall/uninstall. */
-function legacyOurLines(name: string): Set<string> {
-  return new Set([
-    `alias ${name}="claude-geo"`,
-    `alias ${name}='claude-geo'`,
-    `alias ${name}="geo-guard claude"`,
-    `alias ${name}='geo-guard claude'`,
+function legacyOurLines(name: string, command: string): Set<string> {
+  const lines = new Set([
+    `alias ${name}="geo-guard ${command}"`,
+    `alias ${name}='geo-guard ${command}'`,
   ])
+  if (command === 'claude') {
+    // Shipped before the package was renamed; only ever wrapped claude.
+    lines.add(`alias ${name}="claude-geo"`)
+    lines.add(`alias ${name}='claude-geo'`)
+  }
+  return lines
 }
 
 /**
  * Bodies we generate ourselves, byte-for-byte (for any alias name).
  * Only such a block may be regenerated on install — anything else is the user's.
  */
-const PRISTINE_BODY_PATTERNS: RegExp[] = [
-  /^alias\s+[\w.-]+=(["'])geo-guard claude\1$/,
-  /^function\s+[\w.-]+\s*\{\s*geo-guard claude @args\s*\}$/,
-]
+function pristineBodyPatterns(command: string): RegExp[] {
+  const c = escapeRe(command)
+  return [
+    new RegExp(`^alias\\s+[\\w.-]+=(["'])geo-guard ${c}\\1$`),
+    new RegExp(`^function\\s+[\\w.-]+\\s*\\{\\s*geo-guard ${c} @args\\s*\\}$`),
+  ]
+}
 
 /**
  * Our alias *with the user's own flags added* — e.g.
@@ -147,18 +203,22 @@ export function candidateRcPaths(): string[] {
   return [...new Set(paths.map(p => path.normalize(p)))]
 }
 
-export function aliasSnippet(shell: ShellName, name: string = DEFAULT_ALIAS_NAME): string {
-  return `${BEGIN_MARKER}\n${aliasBody(shell, name)}\n${END_MARKER}\n`
+export function aliasSnippet(
+  shell: ShellName,
+  name: string = DEFAULT_ALIAS_NAME,
+  target: AliasTarget = CLAUDE_TARGET,
+): string {
+  return `${target.begin}\n${aliasBody(shell, name, target.command)}\n${target.end}\n`
 }
 
-export function stripMarkedBlock(content: string): string {
-  const begin = content.indexOf(BEGIN_MARKER)
+export function stripMarkedBlock(content: string, target: AliasTarget = CLAUDE_TARGET): string {
+  const begin = content.indexOf(target.begin)
   if (begin === -1) return content
-  const end = content.indexOf(END_MARKER, begin)
+  const end = content.indexOf(target.end, begin)
   // No END — the block was broken by hand. Do NOT cut to the end of the file
   // (otherwise we'd wipe foreign content below). Leave as is; uninstallAliasFromFile handles it.
   if (end === -1) return content
-  const after = end + END_MARKER.length
+  const after = end + target.end.length
   return (content.slice(0, begin) + content.slice(after)).replace(/\n{3,}/g, '\n\n')
 }
 
@@ -168,28 +228,31 @@ export function stripMarkedBlock(content: string): string {
  * with the user's content ending up inside the marker span. The body is removed separately
  * via stripUnmanagedOurAlias. If a matching END is absent/present — we don't touch it.
  */
-function stripOrphanBeginMarker(content: string): string {
-  const begin = content.indexOf(BEGIN_MARKER)
+function stripOrphanBeginMarker(content: string, target: AliasTarget): string {
+  const begin = content.indexOf(target.begin)
   if (begin === -1) return content
-  if (content.indexOf(END_MARKER, begin) !== -1) return content
+  if (content.indexOf(target.end, begin) !== -1) return content
   return content
     .split('\n')
-    .filter(line => line.trim() !== BEGIN_MARKER)
+    .filter(line => line.trim() !== target.begin)
     .join('\n')
 }
 
 /** The body inside the marker block (trimmed), or null if there's no block. */
-export function markedBlockBody(content: string): string | null {
-  const begin = content.indexOf(BEGIN_MARKER)
+export function markedBlockBody(
+  content: string,
+  target: AliasTarget = CLAUDE_TARGET,
+): string | null {
+  const begin = content.indexOf(target.begin)
   if (begin === -1) return null
-  const end = content.indexOf(END_MARKER, begin)
+  const end = content.indexOf(target.end, begin)
   if (end === -1) return null
-  return content.slice(begin + BEGIN_MARKER.length, end).trim()
+  return content.slice(begin + target.begin.length, end).trim()
 }
 
 /** true — if the block body is exactly what we generated (not edited by hand). */
-export function isPristineAliasBody(body: string): boolean {
-  return PRISTINE_BODY_PATTERNS.some(re => re.test(body.trim()))
+export function isPristineAliasBody(body: string, target: AliasTarget = CLAUDE_TARGET): boolean {
+  return pristineBodyPatterns(target.command).some(re => re.test(body.trim()))
 }
 
 export type ParsedAliasBody = Readonly<{
@@ -233,12 +296,21 @@ export function isGeoGuardAliasBody(body: string): boolean {
 }
 
 /** Strips our previous unmanaged lines for a specific name. */
-function stripUnmanagedOurAlias(content: string, name: string): string {
-  const ours = legacyOurLines(name)
+function stripUnmanagedOurAlias(content: string, name: string, command: string): string {
+  const ours = legacyOurLines(name, command)
   return content
     .split('\n')
     .filter(line => !ours.has(line.trim()))
     .join('\n')
+}
+
+/** Everything of ours, whatever target it belongs to, removed from a copy. */
+function withoutAnythingOfOurs(content: string, name: string): string {
+  let out = content
+  for (const target of ALIAS_TARGETS) {
+    out = stripUnmanagedOurAlias(stripMarkedBlock(out, target), name, target.command)
+  }
+  return out
 }
 
 /** Regex detecting an alias/function with the given name for a shell. */
@@ -268,7 +340,9 @@ export function findConflictingAlias(
   shell: ShellName,
   name: string,
 ): string | null {
-  const outside = stripUnmanagedOurAlias(stripMarkedBlock(content), name)
+  // Every block of ours comes out first — an alias we installed is never a
+  // collision with the alias we are about to install.
+  const outside = withoutAnythingOfOurs(content, name)
   const re = aliasDefRegex(shell, name)
   for (const line of outside.split('\n')) {
     if (re.test(line)) return line.trim()
@@ -319,8 +393,8 @@ const NO_BLOCK: AliasBlock = Object.freeze({
  */
 const DEFINED_NAME_RE = /^(?:alias|function)\s+([\w.-]+)/
 
-function classify(body: string, broken: boolean): AliasBlock {
-  if (isPristineAliasBody(body)) {
+function classify(body: string, broken: boolean, target: AliasTarget): AliasBlock {
+  if (isPristineAliasBody(body, target)) {
     const name = parseAliasBody(body)?.name ?? DEFINED_NAME_RE.exec(body.trim())?.[1] ?? null
     return { kind: 'pristine', body, broken, name }
   }
@@ -329,24 +403,27 @@ function classify(body: string, broken: boolean): AliasBlock {
   return { kind: 'foreign', body, broken, name: null }
 }
 
-export function readAliasBlock(content: string): AliasBlock {
-  const begin = content.indexOf(BEGIN_MARKER)
+export function readAliasBlock(
+  content: string,
+  target: AliasTarget = CLAUDE_TARGET,
+): AliasBlock {
+  const begin = content.indexOf(target.begin)
   if (begin === -1) return NO_BLOCK
 
-  const end = content.indexOf(END_MARKER, begin)
+  const end = content.indexOf(target.end, begin)
   if (end !== -1) {
-    return classify(content.slice(begin + BEGIN_MARKER.length, end).trim(), false)
+    return classify(content.slice(begin + target.begin.length, end).trim(), false, target)
   }
 
   // Broken block: we know where it starts, not where it ends. Judge it by its
   // first line — that is as much as we can honestly attribute to the block.
   const firstLine = content
-    .slice(begin + BEGIN_MARKER.length)
+    .slice(begin + target.begin.length)
     .split('\n')
     .map(line => line.trim())
     .find(line => line !== '')
   if (firstLine === undefined) return { ...NO_BLOCK, broken: true }
-  return classify(firstLine, true)
+  return classify(firstLine, true, target)
 }
 
 /**
@@ -361,8 +438,9 @@ export function readAliasBlock(content: string): AliasBlock {
 function preservedBlock(
   content: string,
   overwriteCustom: boolean,
+  target: AliasTarget,
 ): { kind: PreservedAliasKind; body: string } | null {
-  const block = readAliasBlock(content)
+  const block = readAliasBlock(content, target)
   if (block.kind === 'none' || block.kind === 'pristine') return null
 
   // `--force-alias` means "yes, replace the alias I edited" — it does not mean
@@ -427,15 +505,21 @@ export type InstallAliasResult = {
  */
 export function installAlias(
   shell: ShellName = detectShell(),
-  options: Readonly<{ name?: string; skipConflictCheck?: boolean; overwriteCustom?: boolean }> = {},
+  options: Readonly<{
+    name?: string
+    skipConflictCheck?: boolean
+    overwriteCustom?: boolean
+    target?: AliasTarget
+  }> = {},
 ): InstallAliasResult {
-  const name = options.name ?? DEFAULT_ALIAS_NAME
+  const target = options.target ?? CLAUDE_TARGET
+  const name = options.name ?? target.defaultName
   const file = rcPathForShellResolved(shell)
   fs.mkdirSync(path.dirname(file), { recursive: true })
 
   const original = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
 
-  const preserved = preservedBlock(original, options.overwriteCustom ?? false)
+  const preserved = preservedBlock(original, options.overwriteCustom ?? false, target)
   if (preserved) {
     const parsed = parseAliasBody(preserved.body)
     return {
@@ -449,24 +533,45 @@ export function installAlias(
     }
   }
 
-  let content = stripMarkedBlock(original)
-  content = stripOrphanBeginMarker(content)
-  content = stripUnmanagedOurAlias(content, name)
+  const withoutOurs = stripMarkedBlock(original, target)
+  let content = stripOrphanBeginMarker(withoutOurs, target)
+  content = stripUnmanagedOurAlias(content, name, target.command)
 
   if (!options.skipConflictCheck) {
     const conflict = findConflictingAlias(content, shell, name)
     if (conflict) throw new AliasConflictError(name, conflict, file)
   }
 
+  // Already exactly right: don't rewrite the file. Regenerating would move this
+  // block to the bottom — so with two of them, every `setup` run would swap
+  // their order — and stripMarkedBlock collapses blank runs across the whole
+  // file, which is not ours to reformat.
+  const block = readAliasBlock(original, target)
+  const upToDate =
+    block.kind === 'pristine' &&
+    !block.broken &&
+    block.body === aliasBody(shell, name, target.command) &&
+    content === withoutOurs
+  if (upToDate) {
+    return {
+      shell,
+      file,
+      name,
+      snippet: aliasSnippet(shell, name, target).trim(),
+      preserved: null,
+      existingBody: null,
+    }
+  }
+
   if (content.length && !content.endsWith('\n')) content += '\n'
-  content += `\n${aliasSnippet(shell, name)}`
+  content += `\n${aliasSnippet(shell, name, target)}`
   fs.writeFileSync(file, content)
 
   return {
     shell,
     file,
     name,
-    snippet: aliasSnippet(shell, name).trim(),
+    snippet: aliasSnippet(shell, name, target).trim(),
     preserved: null,
     existingBody: null,
   }
@@ -486,26 +591,35 @@ export function uninstallAliasFromFile(file: string): UninstallAliasFileResult {
   }
   const before = fs.readFileSync(file, 'utf8')
 
-  const begin = before.indexOf(BEGIN_MARKER)
-  if (begin !== -1 && before.indexOf(END_MARKER, begin) === -1) {
-    // BEGIN present, END absent — block broken by hand. Don't touch the file at all.
-    return { file, changed: false, modified: true }
+  // Each block is judged on its own: a claude block someone edited by hand is no
+  // reason to leave the cursor-agent one behind, and vice versa.
+  let after = before
+  let modified = false
+  for (const target of ALIAS_TARGETS) {
+    const begin = after.indexOf(target.begin)
+    if (begin !== -1 && after.indexOf(target.end, begin) === -1) {
+      // BEGIN present, END absent — block broken by hand. Don't touch it at all.
+      modified = true
+      continue
+    }
+
+    const body = markedBlockBody(after, target)
+    if (body !== null && !isGeoGuardAliasBody(body)) {
+      // Foreign content between our markers — don't touch, it may hold something important.
+      // Our own alias carrying the user's extra flags is still ours and does get removed.
+      modified = true
+      continue
+    }
+
+    after = stripMarkedBlock(after, target)
+    after = stripUnmanagedOurAlias(after, target.defaultName, target.command)
   }
 
-  const body = markedBlockBody(before)
-  if (body !== null && !isGeoGuardAliasBody(body)) {
-    // Foreign content between our markers — don't touch, it may hold something important.
-    // Our own alias carrying the user's extra flags is still ours and does get removed.
-    return { file, changed: false, modified: true }
-  }
-
-  let after = stripMarkedBlock(before)
-  after = stripUnmanagedOurAlias(after, DEFAULT_ALIAS_NAME)
   if (after === before) {
-    return { file, changed: false, modified: false }
+    return { file, changed: false, modified }
   }
   fs.writeFileSync(file, after)
-  return { file, changed: true, modified: false }
+  return { file, changed: true, modified }
 }
 
 export function uninstallAlias(shell: ShellName = detectShell()): UninstallAliasFileResult & {

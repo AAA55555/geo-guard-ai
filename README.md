@@ -22,7 +22,7 @@ Sometimes you're only allowed to use an AI tool from a specific country — comp
 
 | Checkpoint | What it does |
 |---|---|
-| **Command start** | `geo-guard claude …` (usually via the `claude` alias) checks the country first, and launches Claude Code only if it's allowed |
+| **Command start** | `geo-guard claude …` (usually via the `claude` alias) checks the country first, and launches Claude Code only if it's allowed. The same goes for `cursor-agent` |
 | **Every prompt** | The Claude Code `UserPromptSubmit` hook calls `geo-guard check` before each prompt is sent; country not allowed → the prompt is blocked (exit 2) |
 
 The second checkpoint matters: you can start a session from an allowed country, and an hour later the VPN drops — the hook catches it on your next prompt.
@@ -34,7 +34,7 @@ The second checkpoint matters: you can start a session from an allowed country, 
 | Terminal / IDE integrated terminal | the `claude` alias → `geo-guard claude` wrapper |
 | Claude Code extension panel | the `UserPromptSubmit` hook in `~/.claude/settings.json` |
 | Cursor chat (IDE) | the `beforeSubmitPrompt` hook in `~/.cursor/hooks.json` |
-| `cursor-agent` | the same `~/.cursor/hooks.json` hook |
+| `cursor-agent` (terminal) | the `cursor-agent` alias → `geo-guard cursor-agent` wrapper, plus the same `~/.cursor/hooks.json` hook |
 
 **Fail-closed behavior:** no network, or no provider answered → block. Better safe than sorry.
 
@@ -49,7 +49,7 @@ The check is always **fresh** — no cache. Every `check` call (i.e. every promp
 
 This is **not a security mechanism**, it's everyday insurance. It's trivial to bypass:
 
-- running `claude` around the alias (the `geo-guard` wrapper),
+- running `claude` or `cursor-agent` around the alias (the `geo-guard` wrapper),
 - removing the hook (Claude Code or Cursor),
 - any VPN in an allowed country.
 
@@ -71,7 +71,8 @@ Interactive `setup` asks:
 3. whether to install the **Cursor hook** — only asked if `~/.cursor` exists (default yes);
 4. whether **Cursor needs a country list of its own** — only asked if the Cursor hook is going in (default no; see [Different countries per tool](#different-countries-per-tool));
 5. whether to add the **`claude` → `geo-guard claude` alias** to the current shell's rc (default yes);
-6. which **shell** the alias goes to — the detected one is offered as the default.
+6. whether to add the **`cursor-agent` → `geo-guard cursor-agent` alias** — only asked if `cursor-agent` is on your `PATH` (default yes);
+7. which **shell** the aliases go to — the detected one is offered as the default.
 
 The default offered for the countries is whatever is configured now, so pressing Enter through a second run changes nothing.
 
@@ -156,6 +157,24 @@ geo-guard setup --force-alias
 
 Your own `timeout` / `statusMessage` / `failClosed` in the hook entries (`~/.claude/settings.json`, `~/.cursor/hooks.json`) survive a re-run the same way — only the `command` is ours to rewrite.
 
+### The `cursor-agent` alias
+
+Cursor's terminal client gets its own block, with its own markers:
+
+```sh
+# >>> geo-guard-ai cursor-agent begin >>>
+alias cursor-agent="geo-guard cursor-agent"
+# <<< geo-guard-ai cursor-agent end <<<
+```
+
+It is installed only when `cursor-agent` is actually on your `PATH` — aliasing a command you don't have would replace the shell's honest "command not found" with an error of ours. Control it with `--cursor-alias` / `--no-cursor-alias`; `--no-alias` means "stay out of my rc" and covers both.
+
+Why bother, when `~/.cursor/hooks.json` already guards Cursor? Because the hook only fires once a prompt is submitted, and `cursor-agent` draws a blocked submission as a status line that its next redraw wipes — you see the reason for a second or two and then it's gone. Blocking the launch says it once, up front, and it stays on screen.
+
+**Unlike `claude`, a name collision here is not worked around.** If something else already defines `cursor-agent`, setup skips the alias and says so. A fallback name would stand in front of a command nobody types, so it would look installed and guard nothing.
+
+Everything else works exactly as above: the two blocks are independent, so flags you add to one survive any change to the other, foreign content between either pair of markers is left alone, and re-running `setup` with nothing to change doesn't touch the file at all.
+
 ### Shells
 
 Auto-detected from `$SHELL` (PowerShell on Windows). Supported: **zsh, bash, fish, powershell**.
@@ -204,7 +223,7 @@ To see exactly what a hook host sees, pipe stdout: `geo-guard check | cat`. On s
 
 Only the **global** `~/.cursor/hooks.json` is managed; project-level `.cursor/hooks.json` is out of scope.
 
-Verified against: Cursor 3.15.6, `cursor-agent 2026.07.09-a3815c0`, Claude Code 2.1.227.
+Verified against: Cursor 3.15.6, `cursor-agent 2026.08.25-3e8eec8`, Claude Code 2.1.227.
 
 ## Commands
 
@@ -232,7 +251,8 @@ geo-guard --help                # also help, -h
 | `--force-alias` | overwrite an alias block **of ours** that you edited (default: keep it). It never touches foreign content between the markers — there is no backup of an rc file, and geo-guard does not delete what it did not write |
 | `--hook` / `--no-hook` | install / skip the Claude Code hook |
 | `--cursor` / `--no-cursor` | install / skip the Cursor hook (default: install if `~/.cursor` exists) |
-| `--alias` / `--no-alias` | install / skip the alias |
+| `--alias` / `--no-alias` | install / skip the aliases (`--no-alias` covers both) |
+| `--cursor-alias` / `--no-cursor-alias` | install / skip the `cursor-agent` alias (default: on when `cursor-agent` is on `PATH`) |
 | `--claude-countries ES,PT` | countries for Claude Code only (see [Different countries per tool](#different-countries-per-tool)) |
 | `--cursor-countries PL` | countries for Cursor only |
 
@@ -358,7 +378,7 @@ npm uninstall -g geo-guard-ai     # remove the package itself
 
 - our hook in `~/.claude/settings.json`;
 - our hook in `~/.cursor/hooks.json`;
-- the alias marker block (`# >>> geo-guard-ai begin >>>` …) in all known rc files;
+- both alias marker blocks (`# >>> geo-guard-ai begin >>>` … and `# >>> geo-guard-ai cursor-agent begin >>>` …) in all known rc files, each judged on its own — one you edited by hand is no reason to leave the other behind;
 - `config.json` and the empty config directory.
 
 If the `geo-guard` binary itself is gone (see [Cursor](#cursor) → `failClosed`), `geo-guard uninstall` can't run — remove the hook entries from both files by hand instead.
@@ -393,6 +413,9 @@ Cursor hook: /Users/me/.cursor/hooks.json
 Shell alias: /Users/me/.zshrc
   ✅ alias with flags of your own: alias claude="geo-guard claude --dangerously-skip-permissions"
 
+cursor-agent alias: /Users/me/.zshrc
+  ✅ alias 'cursor-agent' → geo-guard cursor-agent
+
 Country:
   ✅ RU — allowed (allowed: RU, NL)
 
@@ -412,7 +435,7 @@ What it checks:
 
 - the config file: whether it exists and what the effective policy is (the same output as `geo-guard config`);
 - both hook files: whether our entry is there, **and** whether the file is in a shape we could install into at all. A machine with no Cursor is not a broken install — `setup` skips that hook, so `status` says the tool is not installed here and leaves it out of the exit code — a `settings.json` full of broken JSON, or a `hooks` key holding a string, shows up as a line of the report instead of a crash;
-- the alias block in your rc file: ours, ours with flags you added (still fine), foreign content inside our markers (not fine), or a block whose `# <<< geo-guard-ai end <<<` marker has been deleted. That last one is reported as what it is, and says which of the two it is: a block of ours, which `setup` will repair, or one carrying your own content, which `setup` will not touch and you have to fix by hand;
+- both alias blocks in your rc file (the `cursor-agent` one is reported as "not needed" when that command isn't installed): ours, ours with flags you added (still fine), foreign content inside our markers (not fine), or a block whose end marker has been deleted. That last one is reported as what it is, and says which of the two it is: a block of ours, which `setup` will repair, or one carrying your own content, which `setup` will not touch and you have to fix by hand;
 - the current country and whether your policy allows it. This is the one part that does **not** affect the exit code: a blocked country is `geo-guard check`'s business, not a sign that the install is broken. With no network it says `could not determine` instead of failing.
 
 ## Verify
