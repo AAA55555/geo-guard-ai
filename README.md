@@ -8,7 +8,7 @@
 
 Also gates the **Cursor** chat (IDE and `cursor-agent`) the same way, via its own hook config — see [Cursor](#cursor) below.
 
-Cross-platform: **macOS / Linux / Windows**. TypeScript, runtime — Node 18+.
+Cross-platform: **macOS / Linux / Windows**. TypeScript, runtime — Node **18.20+ or 20.12+** (not 18.0–18.19, not 19.x, not 20.0–20.11: those are the versions where `spawn` refuses to launch a `.cmd` on Windows).
 
 The CLI speaks **English or Russian**, picked automatically from your machine locale (`LC_ALL` / `LC_MESSAGES` / `LANG`), English by default. Force it with `GEO_GUARD_LANG=en|ru`.
 
@@ -69,7 +69,11 @@ Interactive `setup` asks:
 1. **allowed countries** (ISO codes, comma-separated, default `NL`);
 2. whether to install the **Claude Code hook** (default yes);
 3. whether to install the **Cursor hook** — only asked if `~/.cursor` exists (default yes);
-4. whether to add the **`claude` → `geo-guard claude` alias** to the current shell's rc (default yes).
+4. whether **Cursor needs a country list of its own** — only asked if the Cursor hook is going in (default no; see [Different countries per tool](#different-countries-per-tool));
+5. whether to add the **`claude` → `geo-guard claude` alias** to the current shell's rc (default yes);
+6. which **shell** the alias goes to — the detected one is offered as the default.
+
+The default offered for the countries is whatever is configured now, so pressing Enter through a second run changes nothing.
 
 Non-interactive (CI / scripts):
 
@@ -106,6 +110,8 @@ geo-guard config --reset --profile cursor # one profile only (same as --unset)
 ```
 
 `--reset` leaves `config.json` exactly as a fresh install would: `allowed: ["NL"]`, the default `timeoutMs` and `providers`, and no `profiles`. It does **not** reinstall or remove anything — the hook configs, the alias and the rc file are untouched, so unlike `uninstall` the guard keeps working, just on the default policy.
+
+`setup` checks everything that could refuse the install **before** it writes anything: if `~/.claude/settings.json` or `~/.cursor/hooks.json` is not valid JSON, or its hook section is not the shape those tools write (say `"UserPromptSubmit"` holding a string), you get a message naming the file and the key, and nothing is changed at all. geo-guard will not rewrite data it doesn't recognize, and it will not leave you with a config but no hook. Entries it doesn't understand *inside* an otherwise valid list are stepped over and left in place.
 
 ## Alias and collisions
 
@@ -211,7 +217,8 @@ geo-guard status                # what is installed (exit 0 = all in place, 1 = 
 geo-guard claude [args…]        # wrapper: check geo and launch claude
 geo-guard <command> [args…]     # same for any command
 geo-guard -- <command> [args…]  # same, when the name looks like a subcommand
-geo-guard --help
+geo-guard version               # also --version, -v
+geo-guard --help                # also help, -h
 ```
 
 `setup` options:
@@ -269,9 +276,12 @@ Env overrides the file:
 | `GEO_GUARD_PROFILE` | force the profile for `geo-guard check` (`claude`, `cursor`) |
 | `GEO_GUARD_REAL_BIN` | explicit path to the target binary (bypasses PATH lookup) |
 | `GEO_GUARD_CONFIG_DIR` | config directory |
+| `XDG_CONFIG_HOME` | not ours, but honoured: the config lives under `$XDG_CONFIG_HOME/geo-guard-ai` when it is set (macOS/Linux) |
 | `GEO_GUARD_CONFIG_FILE` | path to `config.json` |
 | `GEO_GUARD_SHELL` / `GEO_GUARD_RC` | shell / file for the alias. If `GEO_GUARD_RC` is set, `uninstall` works **only** on that file and doesn't touch system rc files |
 | `GEO_GUARD_LANG` | force the CLI language (`en`, `ru`), overriding the auto-detected machine locale |
+
+An empty value is not the same everywhere, and the difference is deliberate: `GEO_GUARD_ALLOWED=''` means "nothing is allowed" and blocks, because a country list you emptied on purpose should not silently fall back to a default; an empty `GEO_GUARD_TIMEOUT` carries no such meaning and falls back.
 
 A provider must return a two-letter ISO country code as text (`ES`). A response not matching `^[A-Za-z]{2}$` is ignored. `allowed` also accepts **only** ISO alpha-2 (`ES`, `PT`); values like `SPAIN` / `ESP` are rejected by `setup` and dropped when loading the config. An empty `providers` list (`[]`) means "no providers" → country can't be determined → block.
 
@@ -302,7 +312,7 @@ geo-guard config --unset --profile cursor          # back to the shared list
 
 ```
 Config: ~/.config/geo-guard-ai/config.json
-  shared   allowed: NL, DE   timeout: 5s   (from the file)
+  shared   allowed: NL, DE (from the file)   timeout: 5s
   claude   allowed: NL, DE   (inherited)
   cursor   allowed: PL   (own profile)
 ```
@@ -353,13 +363,12 @@ npm uninstall -g geo-guard-ai     # remove the package itself
 
 If the `geo-guard` binary itself is gone (see [Cursor](#cursor) → `failClosed`), `geo-guard uninstall` can't run — remove the hook entries from both files by hand instead.
 
-`setup` checks everything that could refuse the install **before** it writes anything: if `~/.claude/settings.json` or `~/.cursor/hooks.json` is not valid JSON, or its hook section is not the shape those tools write (say `"UserPromptSubmit"` holding a string), you get a message naming the file and the key, and nothing is changed at all. geo-guard will not rewrite data it doesn't recognize, and it will not leave you with a config but no hook. Entries it doesn't understand *inside* an otherwise valid list are stepped over and left in place.
-
 Safety on uninstall:
 
 - **other people's aliases** (`cc` / `c` / your own `claude`) aren't touched;
 - by default all known rc files are scanned (`~/.zshrc`, `~/.bashrc`, …). If `GEO_GUARD_RC` is set — only that one: system rc files are neither read nor written in that case;
 - our marker block is removed even if you added your own flags to the alias inside it (`geo-guard claude --dangerously-skip-permissions` is still our alias). But if the markers hold something **foreign** — not a `geo-guard` alias at all — the block is **left as is**; uninstall doesn't remove it but warns instead. You never know what important thing was added there;
+- a marker block whose `# <<< geo-guard-ai end <<<` line has been deleted is **left alone even when the alias inside it is ours** — without that marker there is no way to tell where the block stops, so uninstall warns instead of guessing where to cut;
 - our hook entries in both `settings.json` and `hooks.json` are removed **by matching the command string**, the same way in both files — even if you'd hand-edited `timeout` or added a flag, it's still recognized and removed; the automatic `.bak` is your safety net if that's not what you wanted;
 - the rest of `settings.json` / `hooks.json` and both `.bak` files aren't touched.
 
@@ -426,7 +435,7 @@ npm run test:e2e      # real CLI against a sandboxed $HOME, POSIX only
 npm run test:pack     # npm pack → install the tarball → smoke test
 ```
 
-`npm test` runs `test/*.test.cjs` — split by area (`config`, `alias`, `hooks`, `check`, `setup`, `core`), plus `hook-invariants`, which asserts over a couple of dozen shapes of `settings.json` and `hooks.json` that we never remove an entry that is not ours and never rewrite a file we took nothing out of.
+`npm test` runs `test/*.test.cjs` — split by area (`config`, `alias`, `hooks`, `check`, `setup`, `status`, `core`), plus `hook-invariants`, which asserts over a couple of dozen shapes of `settings.json` and `hooks.json` that we never remove an entry that is not ours and never rewrite a file we took nothing out of.
 
 `scripts/windows-smoke.ps1` covers what the two `sh` scripts above cannot: the PowerShell profile branch of the alias, `%APPDATA%` for the config, `PATHEXT` resolution and spawning a `.cmd`, reading the hook payload from stdin, and `status`. It needs Windows, so CI runs it — see below.
 
