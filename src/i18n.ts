@@ -165,6 +165,7 @@ Usage:
   geo-guard config [options]    show / change the allowed countries
   geo-guard check               hook check (exit 0/2)
   geo-guard status              what is installed and working (exit 0/1)
+  geo-guard version             print the version
   geo-guard <command> [args…]   check geo and run the command
   geo-guard -- <command> […]    same, for a name that looks like a subcommand
 
@@ -360,6 +361,7 @@ const ru: Messages = {
   geo-guard config [options]    показать / изменить разрешённые страны
   geo-guard check               hook-проверка (exit 0/2)
   geo-guard status              что установлено и работает (exit 0/1)
+  geo-guard version             напечатать версию
   geo-guard <command> [args…]   проверить гео и запустить команду
   geo-guard -- <command> […]    то же, если имя похоже на подкоманду
 
