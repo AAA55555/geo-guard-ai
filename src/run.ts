@@ -85,6 +85,24 @@ async function resolveCheckPolicy(argv: readonly string[]): Promise<CheckPolicy>
   return { config: loadStrictestConfig(file) }
 }
 
+/**
+ * cmd.exe quoting for one argument.
+ *
+ * With `shell: true` Node joins the file and the arguments with spaces and
+ * hands the line to `cmd /d /s /c "<line>"` verbatim — it escapes nothing — so
+ * whatever contains a space or a quote has to arrive already quoted. `/s` makes
+ * cmd strip only the outermost pair, which leaves ours intact.
+ *
+ * Note the one thing quotes cannot stop: cmd still expands %VAR% inside them.
+ * The arguments here are what the user typed after `geo-guard claude`, so that
+ * is their own shell's business, but it is worth knowing.
+ */
+export function quoteForCmd(value: string): string {
+  if (value === '') return '""'
+  if (!/[\s"]/.test(value)) return value
+  return `"${value.replace(/"/g, '""')}"`
+}
+
 /** The profile a wrapped command belongs to (`geo-guard claude …`). */
 export function profileForCommand(command: string): ProfileName | undefined {
   const base = path
@@ -182,13 +200,21 @@ export async function runWrap(
 
   console.error(msg().wrapGeoCheckOk(country))
 
-  // No shell. On Windows, Node itself wraps .cmd/.bat into cmd.exe with
-  // cmd-specific argument escaping (patched in 18.20+/20.12+, see engines),
-  // which is safer than invoking cmd.exe by hand. On *nix — a direct binary launch.
-  const child = spawn(realBin, args, {
-    stdio: 'inherit',
-    windowsHide: true,
-  })
+  // A direct launch everywhere except Windows batch files. Node 18.20.2 and
+  // 20.12.2 (CVE-2024-27980) made spawn *refuse* .cmd and .bat without a shell:
+  // it throws EINVAL instead of running them. npm installs its global CLIs as
+  // .cmd shims on Windows, so `geo-guard claude` cannot start Claude Code there
+  // at all without this. Found by the Windows CI job on its first run.
+  const viaShell = process.platform === 'win32' && /\.(cmd|bat)$/i.test(realBin)
+  const child = spawn(
+    viaShell ? quoteForCmd(realBin) : realBin,
+    viaShell ? args.map(quoteForCmd) : args,
+    {
+      stdio: 'inherit',
+      windowsHide: true,
+      shell: viaShell,
+    },
+  )
 
   // Forward signals parent→child so claude is not orphaned when the wrapper is killed.
   const forwardedSignals: NodeJS.Signals[] = ['SIGINT', 'SIGTERM', 'SIGHUP']
