@@ -1,6 +1,6 @@
 'use strict'
 
-const { test, describe, before, after } = require('node:test')
+const { test, describe, before, after, beforeEach, afterEach } = require('node:test')
 const { spawnSync } = require('node:child_process')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
@@ -97,5 +97,159 @@ describe('setup keeps an existing country list', () => {
     ])
     assert.notEqual(r.status, 0)
     assert.equal(fs.readFileSync(cfgFile(), 'utf8'), before)
+  })
+})
+
+describe('interactive setup driven from a pipe', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let home
+  let cfgDir
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-pipe-'))
+    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-pipe-cfg-'))
+  })
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(cfgDir, { recursive: true, force: true })
+  })
+
+  function setup(stdin) {
+    return spawnSync(process.execPath, [cli, 'setup'], {
+      input: stdin,
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: path.join(home, '.zshrc'),
+        GEO_GUARD_SHELL: 'zsh',
+        GEO_GUARD_CONFIG_DIR: cfgDir,
+        GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  const configWritten = () => fs.existsSync(path.join(cfgDir, 'config.json'))
+
+  test('answers piped all at once are all used', () => {
+    // readline hands every piped line over at once; the ones arriving between
+    // questions used to be dropped, and setup then waited forever on a question
+    // nobody could answer — exiting 0 with nothing installed.
+    const r = setup('ES,PT\ny\ny\nzsh\n')
+
+    assert.equal(r.status, 0, r.stderr)
+    assert.equal(configWritten(), true)
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(cfgDir, 'config.json'), 'utf8')).allowed,
+      ['ES', 'PT'],
+    )
+    assert.match(fs.readFileSync(path.join(home, '.zshrc'), 'utf8'), /alias claude=/)
+  })
+
+  test('pressing Enter through every question takes the defaults', () => {
+    const r = setup('\n\n\n\n')
+    assert.equal(r.status, 0, r.stderr)
+    assert.deepEqual(
+      JSON.parse(fs.readFileSync(path.join(cfgDir, 'config.json'), 'utf8')).allowed,
+      ['NL'],
+    )
+  })
+
+  test('input running out is an error, not a silent success', () => {
+    const r = setup('ES,PT\ny\n')
+
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /Input ended before every question/)
+    assert.equal(configWritten(), false)
+  })
+
+  test('no input at all is an error too', () => {
+    const r = setup('')
+    assert.notEqual(r.status, 0)
+    assert.equal(configWritten(), false)
+  })
+})
+
+describe('setup reports the alias name it actually used', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let home
+  let cfgDir
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-aliasname-'))
+    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-aliasname-cfg-'))
+  })
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(cfgDir, { recursive: true, force: true })
+  })
+
+  function setup(extra) {
+    return spawnSync(
+      process.execPath,
+      [cli, 'setup', '--yes', '--countries', 'RU', '--no-hook', '--no-cursor', ...extra],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          GEO_GUARD_RC: path.join(home, '.zshrc'),
+          GEO_GUARD_SHELL: 'zsh',
+          GEO_GUARD_CONFIG_DIR: cfgDir,
+          GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+          GEO_GUARD_LANG: 'en',
+        },
+        encoding: 'utf8',
+      },
+    )
+  }
+
+  test('an uncontested name is not announced as a collision', () => {
+    // Used to print "'claude' was taken by your own alias" on an empty rc.
+    const r = setup(['--alias-name', 'myc'])
+
+    assert.equal(r.status, 0)
+    assert.doesNotMatch(r.stdout, /is taken/)
+    assert.match(fs.readFileSync(path.join(home, '.zshrc'), 'utf8'), /alias myc=/)
+  })
+
+  test('a name that is taken says so, and names both', () => {
+    // Used to fall back to 'claude' without a word about it.
+    fs.writeFileSync(path.join(home, '.zshrc'), 'alias cc="git commit"\n')
+
+    const r = setup(['--alias-name', 'cc'])
+
+    assert.equal(r.status, 0)
+    assert.match(r.stdout, /'cc' is taken by an alias of your own — using 'claude'/)
+    const rc = fs.readFileSync(path.join(home, '.zshrc'), 'utf8')
+    assert.match(rc, /alias cc="git commit"/)
+    assert.match(rc, /alias claude="geo-guard claude"/)
+  })
+
+  test('a PowerShell profile is re-read with a dot, not sourced', () => {
+    const profile = path.join(home, 'p.ps1')
+    const r = spawnSync(
+      process.execPath,
+      [cli, 'setup', '--yes', '--countries', 'RU', '--no-hook', '--no-cursor'],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          GEO_GUARD_RC: profile,
+          GEO_GUARD_SHELL: 'powershell',
+          GEO_GUARD_CONFIG_DIR: cfgDir,
+          GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+          GEO_GUARD_LANG: 'en',
+        },
+        encoding: 'utf8',
+      },
+    )
+
+    assert.equal(r.status, 0)
+    assert.match(r.stdout, /Reload your profile: \. /)
+    assert.doesNotMatch(r.stdout, /source /)
   })
 })
