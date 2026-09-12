@@ -103,6 +103,8 @@ export type Messages = {
   statusAliasPristine: (name: string) => string
   statusAliasCustom: (body: string) => string
   statusAliasForeign: (body: string) => string
+  statusAliasBroken: (body: string) => string
+  statusAliasBrokenRepairable: (body: string) => string
   statusCountryHeader: () => string
   statusCountryAllowed: (country: string, allowed: string) => string
   statusCountryNotAllowed: (country: string, allowed: string) => string
@@ -281,6 +283,10 @@ Examples:
   statusAliasPristine: name => `  ✅ alias '${name}' → geo-guard claude`,
   statusAliasCustom: body => `  ✅ alias with flags of your own: ${body}`,
   statusAliasForeign: body => `  ✖ the geo-guard block holds foreign content: ${body}`,
+  statusAliasBroken: body =>
+    `  ✖ the geo-guard block has no END marker and is not ours to repair — fix the file by hand: ${body}`,
+  statusAliasBrokenRepairable: body =>
+    `  ✖ the geo-guard block has no END marker — 'geo-guard setup' will repair it: ${body}`,
   statusCountryHeader: () => 'Country:',
   statusCountryAllowed: (country, allowed) => `  ✅ ${country} — allowed (allowed: ${allowed})`,
   statusCountryNotAllowed: (country, allowed) =>
@@ -470,6 +476,10 @@ uninstall options:
   statusAliasPristine: name => `  ✅ alias '${name}' → geo-guard claude`,
   statusAliasCustom: body => `  ✅ alias с твоими флагами: ${body}`,
   statusAliasForeign: body => `  ✖ в geo-guard-блоке лежит чужое содержимое: ${body}`,
+  statusAliasBroken: body =>
+    `  ✖ у geo-guard-блока нет END-маркера, и чинить его нам нельзя — поправь файл руками: ${body}`,
+  statusAliasBrokenRepairable: body =>
+    `  ✖ у geo-guard-блока нет END-маркера — 'geo-guard setup' его починит: ${body}`,
   statusCountryHeader: () => 'Страна:',
   statusCountryAllowed: (country, allowed) => `  ✅ ${country} — разрешена (разрешены: ${allowed})`,
   statusCountryNotAllowed: (country, allowed) =>

@@ -96,12 +96,12 @@ function sourceLabel(file: GeoGuardConfigFile, profile?: ProfileName): string {
 }
 
 /** Prints the effective config: the shared policy and what each tool ends up with. */
-export function showConfig(): void {
+export function showConfig(parsed?: GeoGuardConfigFile): void {
   console.log(msg().configPathLine(configPath()))
 
   // Read once for the whole report: every line below asks the same file the
-  // same question, and `geo-guard status` calls this too.
-  const file = readConfigFile()
+  // same question. `geo-guard status` has already read it and passes it in.
+  const file = parsed ?? readConfigFile()
 
   const shared = loadConfig(undefined, file)
   console.log(
