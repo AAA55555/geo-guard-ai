@@ -64,6 +64,15 @@ export function configPath(): string {
   return path.join(configDir(), 'config.json')
 }
 
+/**
+ * Creates the directory the config actually lives in. Not configDir(): with
+ * GEO_GUARD_CONFIG_FILE pointing elsewhere those two diverge, and creating the
+ * wrong one leaves the write failing with a bare ENOENT.
+ */
+function ensureConfigDir(): void {
+  fs.mkdirSync(path.dirname(configPath()), { recursive: true })
+}
+
 /** ISO 3166-1 alpha-2 (matches what geo providers return). */
 const ISO2 = /^[A-Z]{2}$/
 
@@ -218,8 +227,7 @@ export function writeConfig(
   } = {},
   options: Readonly<{ profile?: ProfileName }> = {},
 ): { file: string; config: GeoGuardConfig } {
-  const dir = configDir()
-  fs.mkdirSync(dir, { recursive: true })
+  ensureConfigDir()
 
   const existing = readConfigFile()
   const { profile } = options
@@ -259,7 +267,7 @@ export function writeConfig(
  * kept your old timeoutMs would not be a reset.
  */
 export function resetConfig(): { file: string; config: GeoGuardConfig } {
-  fs.mkdirSync(configDir(), { recursive: true })
+  ensureConfigDir()
 
   const next: GeoGuardConfigFile = {
     allowed: [...DEFAULT_CONFIG.allowed],
@@ -288,7 +296,7 @@ export function removeProfile(profile: ProfileName): { file: string; removed: bo
     delete next.profiles
   }
 
-  fs.mkdirSync(configDir(), { recursive: true })
+  ensureConfigDir()
   fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`)
   return { file, removed: true }
 }
@@ -355,7 +363,35 @@ export function validatedAllowed(countries: string | null): string[] {
   return allowed
 }
 
-/** Whether the file has an explicit section for this profile (for `geo-guard config`). */
-export function hasProfileSection(profile: ProfileName): boolean {
-  return readConfigFile().profiles?.[profile] !== undefined
+/**
+ * Where the effective `allowed` for a profile comes from — for `geo-guard
+ * config`, which otherwise reports a file section while showing a value an env
+ * var overrode.
+ */
+export type AllowedSource =
+  | Readonly<{ kind: 'env'; name: string }>
+  | Readonly<{ kind: 'profile' }>
+  | Readonly<{ kind: 'file' }>
+  | Readonly<{ kind: 'defaults' }>
+
+export function allowedSource(profile?: ProfileName): AllowedSource {
+  if (profile) {
+    const scoped = `GEO_GUARD_ALLOWED_${profile.toUpperCase()}`
+    if (process.env[scoped] !== undefined) return { kind: 'env', name: scoped }
+  }
+  if (process.env.GEO_GUARD_ALLOWED !== undefined) {
+    return { kind: 'env', name: 'GEO_GUARD_ALLOWED' }
+  }
+
+  const file = readConfigFile()
+  // The section existing is not enough: a profile holding only a timeoutMs
+  // inherits the country list, and saying "own profile" there is simply wrong.
+  // `!= null`, not `!== undefined`: loadConfig resolves these through `??`, for
+  // which a JSON null falls through to the level below. The label has to agree.
+  if (profile !== undefined && file.profiles?.[profile]?.allowed != null) {
+    return { kind: 'profile' }
+  }
+  if (file.allowed != null) return { kind: 'file' }
+  return { kind: 'defaults' }
 }
+

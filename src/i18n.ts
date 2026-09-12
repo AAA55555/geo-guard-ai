@@ -29,6 +29,7 @@ export type Messages = {
   postinstallHint: () => string
   unknownProfile: (name: string, list: string) => string
   unknownCheckArg: (arg: string) => string
+  unknownOption: (arg: string) => string
   optionNeedsValue: (name: string) => string
 
   // --- config command ---
@@ -39,10 +40,13 @@ export type Messages = {
   configResetDone: (file: string) => string
   configProfileUnset: (profile: string) => string
   configProfileNotSet: (profile: string) => string
-  configLineShared: (allowed: string, timeoutSeconds: number) => string
+  configLineShared: (allowed: string, timeoutSeconds: number, source: string) => string
   configLineProfile: (profile: string, allowed: string, source: string) => string
   configSourceProfile: () => string
   configSourceInherited: () => string
+  configSourceEnv: (name: string) => string
+  configSourceFile: () => string
+  configSourceDefaults: () => string
   allowedProfileLine: (profile: string, list: string) => string
 
   // --- setup: prompts ---
@@ -113,6 +117,8 @@ export type Messages = {
   // --- errors: config / hook / bin resolution ---
   invalidConfig: (file: string, message: string) => string
   invalidJson: (file: string, message: string) => string
+  invalidHookShape: (file: string, key: string) => string
+  invalidHookRoot: (file: string) => string
   aliasAlreadyExists: (name: string, existing: string) => string
   realBinNotFound: (path: string) => string
   binNotFound: (command: string) => string
@@ -173,6 +179,7 @@ Examples:
   postinstallHint: () => 'run  geo-guard setup',
   unknownProfile: (name, list) => `Unknown profile: '${name}'. Available: ${list}`,
   unknownCheckArg: arg => `Unknown check argument: ${arg}`,
+  unknownOption: arg => `Unknown option: ${arg}. See geo-guard --help`,
   optionNeedsValue: name => `Option ${name} needs a value`,
 
   unknownConfigArg: arg => `Unknown config argument: ${arg}`,
@@ -182,12 +189,15 @@ Examples:
   configResetDone: file => `✅ config back to defaults: ${file}`,
   configProfileUnset: profile => `✅ profile '${profile}' removed — it inherits the shared list now`,
   configProfileNotSet: profile => `⏭  profile '${profile}' had no settings of its own`,
-  configLineShared: (allowed, timeoutSeconds) =>
-    `  shared   allowed: ${allowed}   timeout: ${timeoutSeconds}s`,
+  configLineShared: (allowed, timeoutSeconds, source) =>
+    `  shared   allowed: ${allowed} (${source})   timeout: ${timeoutSeconds}s`,
   configLineProfile: (profile, allowed, source) =>
     `  ${profile.padEnd(8)} allowed: ${allowed}   (${source})`,
   configSourceProfile: () => 'own profile',
   configSourceInherited: () => 'inherited',
+  configSourceEnv: name => `overridden by ${name}`,
+  configSourceFile: () => 'from the file',
+  configSourceDefaults: () => 'built-in default',
   allowedProfileLine: (profile, list) => `   allowed for ${profile}: ${list}`,
 
   promptCountries: () => 'Allowed countries (ISO, comma-separated)',
@@ -264,6 +274,10 @@ Examples:
 
   invalidConfig: (file, message) => `Invalid config ${file}: ${message}`,
   invalidJson: (file, message) => `${file} — invalid JSON: ${message}`,
+  invalidHookShape: (file, key) =>
+    `${file}: '${key}' is not the shape the hook config expects. Fix or remove it by hand — geo-guard will not rewrite someone else's data.`,
+  invalidHookRoot: file =>
+    `${file}: the file does not hold a JSON object. Fix or remove it by hand — geo-guard will not rewrite someone else's data.`,
   aliasAlreadyExists: (name, existing) => `Alias '${name}' already exists: ${existing}`,
   realBinNotFound: path => `GEO_GUARD_REAL_BIN not found: ${path}`,
   binNotFound: command => `Binary not found: ${command}`,
@@ -325,6 +339,7 @@ uninstall options:
   postinstallHint: () => 'запусти  geo-guard setup',
   unknownProfile: (name, list) => `Неизвестный профиль: '${name}'. Доступны: ${list}`,
   unknownCheckArg: arg => `Неизвестный аргумент check: ${arg}`,
+  unknownOption: arg => `Неизвестная опция: ${arg}. Смотри geo-guard --help`,
   optionNeedsValue: name => `Опция ${name} требует значения`,
 
   unknownConfigArg: arg => `Неизвестный аргумент config: ${arg}`,
@@ -334,12 +349,15 @@ uninstall options:
   configResetDone: file => `✅ конфиг сброшен к дефолтам: ${file}`,
   configProfileUnset: profile => `✅ профиль '${profile}' удалён — теперь наследует общий список`,
   configProfileNotSet: profile => `⏭  у профиля '${profile}' не было своих настроек`,
-  configLineShared: (allowed, timeoutSeconds) =>
-    `  общее    allowed: ${allowed}   timeout: ${timeoutSeconds}s`,
+  configLineShared: (allowed, timeoutSeconds, source) =>
+    `  общее    allowed: ${allowed} (${source})   timeout: ${timeoutSeconds}s`,
   configLineProfile: (profile, allowed, source) =>
     `  ${profile.padEnd(8)} allowed: ${allowed}   (${source})`,
   configSourceProfile: () => 'свой профиль',
   configSourceInherited: () => 'наследует',
+  configSourceEnv: name => `перебито ${name}`,
+  configSourceFile: () => 'из файла',
+  configSourceDefaults: () => 'встроенный дефолт',
   allowedProfileLine: (profile, list) => `   allowed для ${profile}: ${list}`,
 
   promptCountries: () => 'Разрешённые страны (ISO, через запятую)',
@@ -416,6 +434,10 @@ uninstall options:
 
   invalidConfig: (file, message) => `Невалидный конфиг ${file}: ${message}`,
   invalidJson: (file, message) => `${file} — невалидный JSON: ${message}`,
+  invalidHookShape: (file, key) =>
+    `${file}: '${key}' не той формы, которую ожидает hook-конфиг. Поправь или убери руками — geo-guard не переписывает чужие данные.`,
+  invalidHookRoot: file =>
+    `${file}: в файле не JSON-объект. Поправь или убери руками — geo-guard не переписывает чужие данные.`,
   aliasAlreadyExists: (name, existing) => `Уже существует alias '${name}': ${existing}`,
   realBinNotFound: path => `GEO_GUARD_REAL_BIN не найден: ${path}`,
   binNotFound: command => `Не найден бинарь: ${command}`,

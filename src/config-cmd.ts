@@ -7,8 +7,8 @@
  */
 
 import {
+  allowedSource,
   configPath,
-  hasProfileSection,
   isProfileName,
   loadConfig,
   removeProfile,
@@ -23,10 +23,16 @@ import { msg } from './i18n'
 export type ConfigOptions = Readonly<{
   countries: string | null
   profile: ProfileName | null
+  /** `--reset` was typed. */
   reset: boolean
-  /** `--unset` is `--reset --profile <name>`; tracked apart only to keep its own wording. */
+  /** `--unset` was typed — the older spelling of `--reset --profile <name>`. */
   unset: boolean
 }>
+
+/** Both spellings run the same operation. */
+export function isResetRequested(opts: ConfigOptions): boolean {
+  return opts.reset || opts.unset
+}
 
 export function parseConfigArgs(argv: string[]): ConfigOptions {
   let countries: string | null = null
@@ -65,7 +71,6 @@ export function parseConfigArgs(argv: string[]): ConfigOptions {
       reset = true
     } else if (arg === '--unset') {
       unset = true
-      reset = true
     } else {
       throw new Error(msg().unknownConfigArg(arg))
     }
@@ -74,35 +79,51 @@ export function parseConfigArgs(argv: string[]): ConfigOptions {
   return { countries, profile, reset, unset }
 }
 
+/**
+ * Human label for where a list came from. An env override has to say so: the
+ * file can hold the defaults while the printed value is something else
+ * entirely, and `(inherited)` on top of that reads as a plain lie.
+ */
+function sourceLabel(profile?: ProfileName): string {
+  const source = allowedSource(profile)
+  if (source.kind === 'env') return msg().configSourceEnv(source.name)
+  if (source.kind === 'profile') return msg().configSourceProfile()
+  if (source.kind === 'defaults') return msg().configSourceDefaults()
+  // The shared level isn't inheriting from anywhere — it is the file itself.
+  if (profile === undefined) return msg().configSourceFile()
+  return msg().configSourceInherited()
+}
+
 /** Prints the effective config: the shared policy and what each tool ends up with. */
 function showConfig(): void {
   console.log(msg().configPathLine(configPath()))
 
   const shared = loadConfig()
-  console.log(msg().configLineShared(shared.allowed.join(', '), shared.timeoutMs / 1000))
+  console.log(
+    msg().configLineShared(shared.allowed.join(', '), shared.timeoutMs / 1000, sourceLabel()),
+  )
 
   for (const profile of PROFILE_NAMES) {
     const config = loadConfig(profile)
-    let source = msg().configSourceInherited()
-    if (hasProfileSection(profile)) source = msg().configSourceProfile()
-    console.log(msg().configLineProfile(profile, config.allowed.join(', '), source))
+    console.log(msg().configLineProfile(profile, config.allowed.join(', '), sourceLabel(profile)))
   }
 }
 
 /** One operation, two spellings: the error has to name the flag the user typed. */
-function withCountriesError(unset: boolean): string {
-  if (unset) return msg().configUnsetWithCountries()
-  return msg().configResetWithCountries()
+function withCountriesError(opts: ConfigOptions): string {
+  if (opts.reset) return msg().configResetWithCountries()
+  return msg().configUnsetWithCountries()
 }
 
 /** `--reset`, and its profile-scoped spelling `--unset --profile <name>`. */
 function runReset(opts: ConfigOptions): void {
-  // --unset is meaningless without a profile; --reset without one is the full reset.
-  if (opts.unset && !opts.profile) {
+  // --unset is meaningless without a profile; --reset without one is the full
+  // reset, and spelling both means the explicit --reset wins.
+  if (opts.unset && !opts.reset && !opts.profile) {
     throw new Error(msg().configUnsetNeedsProfile(PROFILE_NAMES.join(', ')))
   }
   if (opts.countries !== null) {
-    throw new Error(withCountriesError(opts.unset))
+    throw new Error(withCountriesError(opts))
   }
 
   if (opts.profile) {
@@ -124,7 +145,7 @@ function runReset(opts: ConfigOptions): void {
 export async function runConfig(argv: string[] = []): Promise<void> {
   const opts = parseConfigArgs(argv)
 
-  if (opts.reset) {
+  if (isResetRequested(opts)) {
     runReset(opts)
     return
   }

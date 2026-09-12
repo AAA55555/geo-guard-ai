@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { msg } from './i18n'
-import { hookCommand, isOurHook } from './hook-shared'
+import { hookCommand, isOurHook, isPlainObject } from './hook-shared'
 
 export { hookCommand, isOurHook }
 
@@ -36,6 +36,32 @@ type ClaudeSettings = {
     [key: string]: unknown
   }
   [key: string]: unknown
+}
+
+/**
+ * Refuses to work on a settings.json whose hook section is not the shape Claude
+ * Code writes. Without this the `??=` below leaves a string or a number in
+ * place and `.push` blows up with a TypeError that says nothing useful — and by
+ * then setup has already written the config.
+ */
+export function assertClaudeHooksInstallable(): void {
+  const { file, settings } = readSettings()
+
+  // The root first: on an array or a primitive every `??=` below silently does
+  // nothing useful, JSON.stringify drops what we added, and setup reports a
+  // hook it never installed — the machine ends up ungated but looking fine.
+  if (!isPlainObject(settings)) {
+    throw new Error(msg().invalidHookRoot(file))
+  }
+  if (settings.hooks === undefined) return
+
+  if (!isPlainObject(settings.hooks)) {
+    throw new Error(msg().invalidHookShape(file, 'hooks'))
+  }
+  const list = settings.hooks.UserPromptSubmit
+  if (list !== undefined && !Array.isArray(list)) {
+    throw new Error(msg().invalidHookShape(file, 'hooks.UserPromptSubmit'))
+  }
 }
 
 export function settingsPath(): string {
@@ -72,17 +98,29 @@ function stripOurHooks(settings: ClaudeSettings): ClaudeSettings {
   const hooks = settings.hooks
   if (!hooks) return settings
 
-  hooks.UserPromptSubmit = matchers
-    .map(matcher => ({
-      ...matcher,
-      hooks: (matcher.hooks ?? []).filter(hook => !isOurHook(hook)),
-    }))
-    .filter(matcher => (matcher.hooks?.length ?? 0) > 0)
+  // Only entries we recognize AND actually took something out of are rewritten.
+  // A matcher shaped in a way we don't understand — or one that simply holds no
+  // hook of ours — is left exactly as it was: it is not ours to delete.
+  let removed = false
+  hooks.UserPromptSubmit = matchers.filter(matcher => {
+    if (!isPlainObject(matcher) || !Array.isArray(matcher.hooks)) return true
 
-  if (hooks.UserPromptSubmit.length === 0) {
+    const kept = matcher.hooks.filter(hook => !isOurHook(hook))
+    if (kept.length === matcher.hooks.length) return true
+
+    removed = true
+    matcher.hooks = kept
+    // Drop it only if it existed solely to carry our hook.
+    return kept.length > 0
+  })
+
+  // Tidy up only what we emptied ourselves. An already-empty UserPromptSubmit
+  // is someone else's structure — deleting it would be a write to a file we
+  // took nothing out of.
+  if (removed && hooks.UserPromptSubmit.length === 0) {
     delete hooks.UserPromptSubmit
   }
-  if (Object.keys(hooks).length === 0) {
+  if (removed && Object.keys(hooks).length === 0) {
     delete settings.hooks
   }
   return settings
@@ -93,23 +131,33 @@ function stripOurHooks(settings: ClaudeSettings): ClaudeSettings {
  * matcher it sits in) and drops any duplicates. Returns whether one was found
  * and whether it carried settings of the user's own.
  */
-function updateOurHooksInPlace(settings: ClaudeSettings): { found: boolean; kept: boolean } {
+function updateOurHooksInPlace(settings: ClaudeSettings): {
+  found: boolean
+  kept: boolean
+  emptied: ClaudeHookMatcher[]
+} {
   const matchers = settings.hooks?.UserPromptSubmit
-  if (!Array.isArray(matchers)) return { found: false, kept: false }
+  if (!Array.isArray(matchers)) return { found: false, kept: false, emptied: [] }
 
   let found = false
   let kept = false
+  const emptied: ClaudeHookMatcher[] = []
 
   for (const matcher of matchers) {
+    if (!isPlainObject(matcher)) continue
     const hooks = matcher.hooks
     if (!Array.isArray(hooks)) continue
 
     const next: ClaudeHook[] = []
+    // Whether this matcher held a hook of ours. If it didn't, we rewrite
+    // nothing here — not even to the same value.
+    let touched = false
     for (const hook of hooks) {
       if (!isOurHook(hook)) {
         next.push(hook)
         continue
       }
+      touched = true
       // Only the first one survives — the rest are leftovers from older installs.
       if (found) continue
       found = true
@@ -117,25 +165,29 @@ function updateOurHooksInPlace(settings: ClaudeSettings): { found: boolean; kept
       kept = JSON.stringify(updated) !== JSON.stringify(defaultHook())
       next.push(updated)
     }
+    if (!touched) continue
     matcher.hooks = next
+    if (next.length === 0) emptied.push(matcher)
   }
 
-  return { found, kept }
+  return { found, kept, emptied }
 }
 
 export function installClaudeHook(): { file: string; command: string; kept: boolean } {
+  assertClaudeHooksInstallable()
   const { file, settings } = readSettings()
 
-  const { found, kept } = updateOurHooksInPlace(settings)
+  const { found, kept, emptied } = updateOurHooksInPlace(settings)
   if (!found) {
     settings.hooks ??= {}
     settings.hooks.UserPromptSubmit ??= []
     settings.hooks.UserPromptSubmit.push({ hooks: [defaultHook()] })
-  } else {
-    // Matchers that held nothing but our duplicates are now empty.
+  } else if (emptied.length > 0) {
+    // Matchers that held nothing but our duplicates. Only those: a matcher that
+    // was already empty, or that we never touched, stays where the user put it.
     const matchers = settings.hooks?.UserPromptSubmit
     if (Array.isArray(matchers) && settings.hooks) {
-      settings.hooks.UserPromptSubmit = matchers.filter(m => (m.hooks?.length ?? 0) > 0)
+      settings.hooks.UserPromptSubmit = matchers.filter(m => !emptied.includes(m))
     }
   }
 
@@ -149,6 +201,10 @@ export function uninstallClaudeHook(): { file: string; changed: boolean } {
   if (!fs.existsSync(file)) return { file, changed: false }
 
   const { settings } = readSettings()
+  // Nothing of ours can live in a file that isn't an object — and we must not
+  // try to walk it.
+  if (!isPlainObject(settings)) return { file, changed: false }
+
   const before = JSON.stringify(settings)
   stripOurHooks(settings)
   const after = JSON.stringify(settings)
