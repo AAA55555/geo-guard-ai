@@ -28,6 +28,29 @@ jobs:
       - run: npm run test:e2e
       - run: npm run test:pack
 
+  # macOS has one branch of its own — rcPathForShell falls back to
+  # ~/.bash_profile there, because a login bash shell on macOS reads that and
+  # not ~/.bashrc — and the POSIX suites run fine on it. One Node is enough:
+  # the version axis is Ubuntu's job, this one is about the platform.
+  macos:
+    name: macos / node ${{ matrix.node }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:e2e
+      - run: npm run test:pack
+
   # Windows has a real code surface of its own — the powershell branch of
   # shell-alias, %APPDATA% in config, PATHEXT in resolve-bin, spawning a .cmd in
   # run — and nothing used to exercise it.
