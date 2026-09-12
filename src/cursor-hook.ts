@@ -72,6 +72,17 @@ export function cursorHooksPath(): string {
   return path.join(os.homedir(), '.cursor', 'hooks.json')
 }
 
+/**
+ * Whether Cursor looks installed at all. setup uses this to decide whether the
+ * hook is even wanted, and status uses it to avoid demanding a hook setup
+ * deliberately did not install — otherwise a machine without Cursor reports a
+ * broken install forever, and the advice it prints ("run setup") changes
+ * nothing.
+ */
+export function cursorDirExists(): boolean {
+  return fs.existsSync(path.dirname(cursorHooksPath()))
+}
+
 function readHooksFile(): { file: string; data: CursorHooksFile } {
   const file = cursorHooksPath()
   if (!fs.existsSync(file)) return { file, data: {} }

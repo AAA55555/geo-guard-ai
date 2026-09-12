@@ -11,7 +11,7 @@ import {
   type ProfileName,
 } from './config'
 import { assertClaudeHooksInstallable, installClaudeHook } from './claude-hook'
-import { assertCursorHooksInstallable, installCursorHook } from './cursor-hook'
+import { assertCursorHooksInstallable, cursorDirExists, installCursorHook } from './cursor-hook'
 import {
   aliasConflictFor,
   assertAliasWritable,
@@ -39,11 +39,6 @@ export type SetupOptions = Readonly<{
   claudeCountries: string | null
   cursorCountries: string | null
 }>
-
-/** Whether `~/.cursor` exists — gate for the cursor-hook question in --yes mode. */
-function cursorDirExists(): boolean {
-  return fs.existsSync(path.join(os.homedir(), '.cursor'))
-}
 
 /** Alias name candidates for a collision in non-interactive mode. */
 const FALLBACK_ALIAS_NAMES = [DEFAULT_ALIAS_NAME, 'cc', 'ccg', 'geoclaude']

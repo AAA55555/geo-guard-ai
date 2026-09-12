@@ -110,12 +110,22 @@ export function parseAllowed(value: unknown): string[] {
 export function readConfigFile(): GeoGuardConfigFile {
   const file = configPath()
   if (!fs.existsSync(file)) return {}
+
+  let parsed: unknown
   try {
-    return JSON.parse(fs.readFileSync(file, 'utf8')) as GeoGuardConfigFile
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'))
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     throw new Error(msg().invalidConfig(file, message))
   }
+
+  // `null` and `[…]` are valid JSON but not a config. Without this they reach
+  // the layering code and surface as "Cannot read properties of null", which
+  // tells the user nothing and isn't even translated.
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error(msg().invalidConfig(file, msg().notAnObject()))
+  }
+  return parsed as GeoGuardConfigFile
 }
 
 /** GEO_GUARD_TIMEOUT is always in seconds → ms. */

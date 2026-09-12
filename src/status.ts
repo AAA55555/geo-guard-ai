@@ -13,7 +13,12 @@
 import fs from 'node:fs'
 
 import { assertClaudeHooksInstallable, claudeHookInstalled, settingsPath } from './claude-hook'
-import { assertCursorHooksInstallable, cursorHookInstalled, cursorHooksPath } from './cursor-hook'
+import {
+  assertCursorHooksInstallable,
+  cursorDirExists,
+  cursorHookInstalled,
+  cursorHooksPath,
+} from './cursor-hook'
 import { configPath, loadConfig, readConfigFile, type GeoGuardConfigFile } from './config'
 import { showConfig } from './config-cmd'
 import { detectCountry, isAllowed } from './geo'
@@ -22,6 +27,31 @@ import { msg } from './i18n'
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
+}
+
+/**
+ * Whether a path is there — distinguishing "no such file" from "cannot look".
+ * existsSync answers false to both, and reporting an unreadable directory as
+ * "not installed" is simply untrue.
+ */
+function fileState(file: string): 'present' | 'missing' | { problem: string } {
+  try {
+    fs.statSync(file)
+    return 'present'
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
+    return { problem: errorMessage(err) }
+  }
+}
+
+/**
+ * Content from someone else's file, on its way to a terminal. Escape sequences
+ * in an rc file would otherwise retitle the window or clear the screen when the
+ * report echoes the block back.
+ */
+function forDisplay(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
 }
 
 /** The config path, the effective policy, and whether the file is actually there. */
@@ -38,8 +68,13 @@ function reportConfig(parsed: GeoGuardConfigFile | null): boolean {
     return false
   }
 
-  if (!fs.existsSync(file)) {
+  const state = fileState(file)
+  if (state === 'missing') {
     console.log(msg().statusConfigMissing())
+    return false
+  }
+  if (state !== 'present') {
+    console.log(msg().statusProblem(state.problem))
     return false
   }
   console.log(msg().statusConfigPresent())
@@ -56,6 +91,7 @@ function reportHook(
   pathOf: () => string,
   assertInstallable: () => void,
   isInstalled: () => boolean,
+  options: Readonly<{ wanted?: () => boolean }> = {},
 ): boolean {
   let file: string
   try {
@@ -66,8 +102,21 @@ function reportHook(
   }
   console.log(header(file))
 
-  if (!fs.existsSync(file)) {
+  // Not installed and not supposed to be: setup skips the Cursor hook on a
+  // machine with no Cursor, so demanding it here would report a healthy install
+  // as broken and send the user to a command that changes nothing.
+  if (options.wanted && !options.wanted()) {
+    console.log(msg().statusHookNotNeeded())
+    return true
+  }
+
+  const state = fileState(file)
+  if (state === 'missing') {
     console.log(msg().statusHookFileMissing())
+    return false
+  }
+  if (state !== 'present') {
+    console.log(msg().statusProblem(state.problem))
     return false
   }
 
@@ -96,8 +145,13 @@ function reportAlias(): boolean {
     file = rcPathForShellResolved(detectShell())
     console.log(msg().statusAliasHeader(file))
 
-    if (!fs.existsSync(file)) {
+    const state = fileState(file)
+    if (state === 'missing') {
       console.log(msg().statusAliasFileMissing())
+      return false
+    }
+    if (state !== 'present') {
+      console.log(msg().statusProblem(state.problem))
       return false
     }
     content = fs.readFileSync(file, 'utf8')
@@ -119,9 +173,9 @@ function reportAlias(): boolean {
     // setup can repair a block of ours; anything else it refuses to touch, so
     // saying "re-run setup" there would send the user in a circle.
     if (block.kind === 'pristine') {
-      console.log(msg().statusAliasBrokenRepairable(block.body))
+      console.log(msg().statusAliasBrokenRepairable(forDisplay(block.body)))
     } else {
-      console.log(msg().statusAliasBroken(block.body))
+      console.log(msg().statusAliasBroken(forDisplay(block.body)))
     }
     return false
   }
@@ -133,11 +187,11 @@ function reportAlias(): boolean {
   // Still our alias, still routed through the geo-check — the user just added
   // flags of their own, which setup deliberately keeps.
   if (block.kind === 'custom') {
-    console.log(msg().statusAliasCustom(block.body))
+    console.log(msg().statusAliasCustom(forDisplay(block.body)))
     return true
   }
 
-  console.log(msg().statusAliasForeign(block.body))
+  console.log(msg().statusAliasForeign(forDisplay(block.body)))
   return false
 }
 
@@ -212,6 +266,7 @@ export async function runStatus(argv: string[] = []): Promise<boolean> {
       cursorHooksPath,
       assertCursorHooksInstallable,
       cursorHookInstalled,
+      { wanted: cursorDirExists },
     ),
   )
   console.log('')
