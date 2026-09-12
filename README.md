@@ -89,10 +89,14 @@ Re-running `setup` **does not reset** custom `timeoutMs` / `providers` in the co
 ### Change allowed countries
 
 ```bash
-geo-guard setup -y -c NL
+geo-guard config --countries NL
 ```
 
-Hooks and the alias stay as they are (re-running `setup` is idempotent). For a one-off check without writing the config: `GEO_GUARD_ALLOWED=NL geo-guard check`.
+This touches **only** `config.json` — your rc file and both hook configs are left alone. `geo-guard setup -y -c NL` also works, but it walks the whole install again; prefer `config` for a routine change.
+
+`setup` no longer resets anything you didn't ask it to: run it without `--countries` and the configured list stays as it is (so does `timeoutMs`, `providers`, and any profile).
+
+For a one-off check without writing the config: `GEO_GUARD_ALLOWED=NL geo-guard check`.
 
 ## Alias and collisions
 
@@ -192,6 +196,7 @@ Verified against: Cursor 3.15.6, `cursor-agent 2026.07.09-a3815c0`, Claude Code 
 ```bash
 geo-guard setup [options]       # configure
 geo-guard uninstall [options]   # remove hook + alias + config
+geo-guard config [options]      # show / change the allowed countries
 geo-guard check                 # check for the hook (exit 0 = ok, 2 = block)
 geo-guard claude [args…]        # wrapper: check geo and launch claude
 geo-guard <command> [args…]     # same for any command
@@ -210,6 +215,17 @@ geo-guard --help
 | `--hook` / `--no-hook` | install / skip the Claude Code hook |
 | `--cursor` / `--no-cursor` | install / skip the Cursor hook (default: install if `~/.cursor` exists) |
 | `--alias` / `--no-alias` | install / skip the alias |
+| `--claude-countries ES,PT` | countries for Claude Code only (see [Different countries per tool](#different-countries-per-tool)) |
+| `--cursor-countries PL` | countries for Cursor only |
+
+`config` options — change the policy **without** touching your rc file or either hook config:
+
+| Option | Meaning |
+|---|---|
+| *(none)* | print the effective config |
+| `-c, --countries ES,PT` | set the allowed countries |
+| `-p, --profile claude\|cursor` | apply to that tool only |
+| `--unset --profile cursor` | drop the profile; that tool goes back to the shared list |
 
 ## Config
 
@@ -236,6 +252,8 @@ Env overrides the file:
 | `GEO_GUARD_ALLOWED` | `ES,PT` |
 | `GEO_GUARD_TIMEOUT` | provider request timeout, **seconds** (in the file `timeoutMs` is milliseconds) |
 | `GEO_GUARD_PROVIDERS` | provider URLs, space-separated (empty → no providers → block) |
+| `GEO_GUARD_ALLOWED_CLAUDE` / `GEO_GUARD_ALLOWED_CURSOR` | the same, for one tool only (likewise `GEO_GUARD_TIMEOUT_*` / `GEO_GUARD_PROVIDERS_*`) — see [Different countries per tool](#different-countries-per-tool) |
+| `GEO_GUARD_PROFILE` | force the profile for `geo-guard check` (`claude`, `cursor`) |
 | `GEO_GUARD_REAL_BIN` | explicit path to the target binary (bypasses PATH lookup) |
 | `GEO_GUARD_CONFIG_DIR` | config directory |
 | `GEO_GUARD_CONFIG_FILE` | path to `config.json` |
@@ -243,6 +261,60 @@ Env overrides the file:
 | `GEO_GUARD_LANG` | force the CLI language (`en`, `ru`), overriding the auto-detected machine locale |
 
 A provider must return a two-letter ISO country code as text (`ES`). A response not matching `^[A-Za-z]{2}$` is ignored. `allowed` also accepts **only** ISO alpha-2 (`ES`, `PT`); values like `SPAIN` / `ESP` are rejected by `setup` and dropped when loading the config. An empty `providers` list (`[]`) means "no providers" → country can't be determined → block.
+
+### Different countries per tool
+
+Claude Code and Cursor share one policy by default. When they need to differ, add a **profile** — an optional `profiles` section that overrides the shared level for one tool:
+
+```json
+{
+  "allowed": ["NL", "DE"],
+  "timeoutMs": 5000,
+  "profiles": {
+    "cursor": { "allowed": ["PL"] }
+  }
+}
+```
+
+Here Claude Code allows NL/DE and Cursor allows PL. A profile may override `allowed`, `timeoutMs` and `providers`; whatever it leaves out is inherited from the shared level. A config with no `profiles` behaves exactly as before.
+
+Set it from the CLI — no rc file or hook config is touched:
+
+```bash
+geo-guard config                                   # show the effective policy per tool
+geo-guard config --countries NL,DE                 # shared
+geo-guard config --countries PL --profile cursor   # Cursor only
+geo-guard config --unset --profile cursor          # back to the shared list
+```
+
+```
+Config: ~/.config/geo-guard-ai/config.json
+  shared   allowed: NL, DE   timeout: 5s
+  claude   allowed: NL, DE   (inherited)
+  cursor   allowed: PL   (own profile)
+```
+
+`setup` can do it too, at install time: `geo-guard setup --countries NL,DE --cursor-countries PL`, or by answering *"Use a different country list for Cursor?"* in the interactive flow.
+
+Priority, highest first:
+
+1. `GEO_GUARD_ALLOWED_CLAUDE` / `GEO_GUARD_ALLOWED_CURSOR` (and the `_TIMEOUT_` / `_PROVIDERS_` equivalents)
+2. `GEO_GUARD_ALLOWED` and friends
+3. `profiles.<tool>` in `config.json`
+4. the top level of `config.json`
+5. built-in defaults
+
+**How the hook knows which tool is asking.** It can't be a flag in the command: Cursor imports Claude Code's hooks and drops the ones whose command string matches its own byte for byte — that exact match is what keeps the check running once per prompt instead of twice (see [Cursor](#cursor)). So both config files keep the identical `geo-guard check`, and the profile is worked out at run time from the JSON the host pipes to stdin: Claude Code sends `hook_event_name: "UserPromptSubmit"`, Cursor `"beforeSubmitPrompt"`. That's the real host, whichever file the entry came from.
+
+If nothing is piped in at all — you ran `geo-guard check` yourself in a terminal — the **shared** policy applies, the same behaviour as before profiles existed. If a host did pipe something in but it can't be identified (garbage, or a future event name we don't know), the **strictest** policy applies instead: only countries that the shared list and every configured profile allow. Guessing one tool's policy for another is the one thing worth failing closed over.
+
+You can force a profile explicitly for debugging:
+
+```bash
+geo-guard check --profile cursor     # or GEO_GUARD_PROFILE=cursor
+```
+
+The stdin read is skipped entirely when no profile is configured anywhere, so the common setup pays nothing for this.
 
 ## Uninstall
 

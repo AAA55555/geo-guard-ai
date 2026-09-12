@@ -189,7 +189,7 @@ function markedBlockBody(content: string): string | null {
 
 /** true — if the block body is exactly what we generated (not edited by hand). */
 export function isPristineAliasBody(body: string): boolean {
-  return PRISTINE_BODY_PATTERNS.some(re => re.test(body))
+  return PRISTINE_BODY_PATTERNS.some(re => re.test(body.trim()))
 }
 
 export type ParsedAliasBody = Readonly<{
@@ -288,6 +288,41 @@ export function aliasConflictFor(
 }
 
 /**
+ * The existing block we must not touch, or null when it's ours to regenerate.
+ *
+ * A block whose END marker someone deleted counts as foreign: we cannot tell
+ * where it stops, and repairing it would append a second `alias claude=…` below
+ * the user's own line — which in zsh/bash wins, silently dropping their flags.
+ */
+function preservedBlock(
+  content: string,
+  overwriteCustom: boolean,
+): { kind: PreservedAliasKind; body: string } | null {
+  if (overwriteCustom) return null
+
+  const begin = content.indexOf(BEGIN_MARKER)
+  if (begin === -1) return null
+
+  const end = content.indexOf(END_MARKER, begin)
+  if (end === -1) {
+    // Broken block: we know where it starts, not where it ends. Repairing is
+    // safe only for a body we generated ourselves — stripUnmanagedOurAlias
+    // knows how to remove exactly that line. Anything else stays put.
+    const firstLine = content
+      .slice(begin + BEGIN_MARKER.length)
+      .split('\n')
+      .map(line => line.trim())
+      .find(line => line !== '')
+    if (firstLine === undefined || isPristineAliasBody(firstLine)) return null
+    return { kind: parseAliasBody(firstLine) ? 'custom' : 'foreign', body: firstLine }
+  }
+
+  const body = content.slice(begin + BEGIN_MARKER.length, end).trim()
+  if (isPristineAliasBody(body)) return null
+  return { kind: parseAliasBody(body) ? 'custom' : 'foreign', body }
+}
+
+/**
  * Why an existing block was left alone:
  * - `custom`  — our alias plus the user's own flags;
  * - `foreign` — something else entirely between our markers.
@@ -325,17 +360,17 @@ export function installAlias(
 
   const original = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
 
-  const body = markedBlockBody(original)
-  if (body !== null && !isPristineAliasBody(body) && !options.overwriteCustom) {
-    const parsed = parseAliasBody(body)
+  const preserved = preservedBlock(original, options.overwriteCustom ?? false)
+  if (preserved) {
+    const parsed = parseAliasBody(preserved.body)
     return {
       shell,
       file,
       // For our own customized block the name in the file is the truth.
       name: parsed?.name ?? name,
-      snippet: body,
-      preserved: parsed ? 'custom' : 'foreign',
-      existingBody: body,
+      snippet: '',
+      preserved: preserved.kind,
+      existingBody: preserved.body,
     }
   }
 
