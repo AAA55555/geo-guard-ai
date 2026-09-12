@@ -402,7 +402,7 @@ geo-guard status >/dev/null || geo-guard setup --yes
 What it checks:
 
 - the config file: whether it exists and what the effective policy is (the same output as `geo-guard config`);
-- both hook files: whether our entry is there, **and** whether the file is in a shape we could install into at all — a `settings.json` full of broken JSON, or a `hooks` key holding a string, shows up as a line of the report instead of a crash;
+- both hook files: whether our entry is there, **and** whether the file is in a shape we could install into at all. A machine with no Cursor is not a broken install — `setup` skips that hook, so `status` says the tool is not installed here and leaves it out of the exit code — a `settings.json` full of broken JSON, or a `hooks` key holding a string, shows up as a line of the report instead of a crash;
 - the alias block in your rc file: ours, ours with flags you added (still fine), foreign content inside our markers (not fine), or a block whose `# <<< geo-guard-ai end <<<` marker has been deleted. That last one is reported as what it is, and says which of the two it is: a block of ours, which `setup` will repair, or one carrying your own content, which `setup` will not touch and you have to fix by hand;
 - the current country and whether your policy allows it. This is the one part that does **not** affect the exit code: a blocked country is `geo-guard check`'s business, not a sign that the install is broken. With no network it says `could not determine` instead of failing.
 
