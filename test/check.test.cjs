@@ -424,3 +424,26 @@ describe('resolveRealBin', () => {
     assert.equal(path.basename(resolved), 'claude')
   })
 })
+
+describe('quoteForCmd', () => {
+  const { quoteForCmd } = require('../dist/run')
+
+  // Нужен только на Windows, но проверяется везде: без него `geo-guard claude`
+  // там не запускается вовсе — начиная с 18.20.2 / 20.12.2 spawn отказывается
+  // выполнять .cmd без шелла (CVE-2024-27980), а npm ставит глобальные CLI
+  // именно как .cmd-шимы.
+  test('leaves ordinary arguments alone', () => {
+    assert.equal(quoteForCmd('--version'), '--version')
+    assert.equal(quoteForCmd('plain'), 'plain')
+    assert.equal(quoteForCmd('--dangerously-skip-permissions'), '--dangerously-skip-permissions')
+  })
+
+  test('quotes what cmd would otherwise split or swallow', () => {
+    assert.equal(quoteForCmd('a b'), '"a b"')
+    assert.equal(quoteForCmd('C:\\Program Files\\x\\claude.cmd'), '"C:\\Program Files\\x\\claude.cmd"')
+    // cmd ждёт удвоенную кавычку внутри кавычек, а не обратный слеш
+    assert.equal(quoteForCmd('say "hi"'), '"say ""hi"""')
+    // пустой аргумент обязан дожить до программы, а не исчезнуть
+    assert.equal(quoteForCmd(''), '""')
+  })
+})
