@@ -209,6 +209,7 @@ geo-guard config [options]      # show / change the allowed countries
 geo-guard check                 # check for the hook (exit 0 = ok, 2 = block)
 geo-guard claude [args…]        # wrapper: check geo and launch claude
 geo-guard <command> [args…]     # same for any command
+geo-guard -- <command> [args…]  # same, when the name looks like a subcommand
 geo-guard --help
 ```
 
@@ -320,6 +321,8 @@ Priority, highest first:
 **How the hook knows which tool is asking.** It can't be a flag in the command: Cursor imports Claude Code's hooks and drops the ones whose command string matches its own byte for byte — that exact match is what keeps the check running once per prompt instead of twice (see [Cursor](#cursor)). So both config files keep the identical `geo-guard check`, and the profile is worked out at run time from the JSON the host pipes to stdin: Claude Code sends `hook_event_name: "UserPromptSubmit"`, Cursor `"beforeSubmitPrompt"`. That's the real host, whichever file the entry came from.
 
 If nothing is piped in at all — you ran `geo-guard check` yourself in a terminal — the **shared** policy applies, the same behaviour as before profiles existed. If a host did pipe something in but it can't be identified (garbage, or a future event name we don't know), the **strictest** policy applies instead: only countries that the shared list and every configured profile allow. Guessing one tool's policy for another is the one thing worth failing closed over.
+
+Worth knowing what that means if your lists don't overlap — `claude: ["NL"]`, `cursor: ["PL"]` intersect to nothing, so an unidentifiable host blocks every prompt. That is the intended direction to fail in, but if a future version of either tool renames its event you'd see everything blocked rather than a warning. `geo-guard check --profile claude` tells you immediately whether that is what happened.
 
 You can force a profile explicitly for debugging:
 

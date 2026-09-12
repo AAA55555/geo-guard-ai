@@ -6,6 +6,7 @@ import {
   loadStrictestConfig,
   isProfileName,
   profilesConfigured,
+  readConfigFile,
   PROFILE_NAMES,
   type GeoGuardConfig,
   type ProfileName,
@@ -55,29 +56,33 @@ type CheckPolicy = Readonly<{ config: GeoGuardConfig; profile?: ProfileName }>
  * strictest policy rather than quietly picking the most permissive one.
  */
 async function resolveCheckPolicy(argv: readonly string[]): Promise<CheckPolicy> {
+  // Read the config once and pass it down: this runs on every prompt in both
+  // tools, and each extra call here is another synchronous read and parse.
+  const file = readConfigFile()
+
   const fromArgs = profileFromArgs(argv)
-  if (fromArgs) return { config: loadConfig(fromArgs), profile: fromArgs }
+  if (fromArgs) return { config: loadConfig(fromArgs, file), profile: fromArgs }
 
   const fromEnv = process.env.GEO_GUARD_PROFILE
   if (fromEnv !== undefined && fromEnv !== '') {
     if (!isProfileName(fromEnv)) {
       throw new Error(msg().unknownProfile(fromEnv, PROFILE_NAMES.join(', ')))
     }
-    return { config: loadConfig(fromEnv), profile: fromEnv }
+    return { config: loadConfig(fromEnv, file), profile: fromEnv }
   }
 
   // Nothing is configured per tool — don't pay for reading stdin at all.
-  if (!profilesConfigured()) return { config: loadConfig() }
+  if (!profilesConfigured(file)) return { config: loadConfig(undefined, file) }
 
   const result = await readHookPayload()
-  if (result.kind === 'none') return { config: loadConfig() }
+  if (result.kind === 'none') return { config: loadConfig(undefined, file) }
 
   if (result.kind === 'payload') {
     const profile = profileFromEvent(result.payload.hook_event_name)
-    if (profile) return { config: loadConfig(profile), profile }
+    if (profile) return { config: loadConfig(profile, file), profile }
   }
 
-  return { config: loadStrictestConfig() }
+  return { config: loadStrictestConfig(file) }
 }
 
 /** The profile a wrapped command belongs to (`geo-guard claude …`). */

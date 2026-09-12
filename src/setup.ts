@@ -14,6 +14,7 @@ import { assertClaudeHooksInstallable, installClaudeHook } from './claude-hook'
 import { assertCursorHooksInstallable, installCursorHook } from './cursor-hook'
 import {
   aliasConflictFor,
+  assertAliasWritable,
   detectShell,
   installAlias,
   listSupportedShells,
@@ -22,6 +23,7 @@ import {
   DEFAULT_ALIAS_NAME,
   type ShellName,
 } from './shell-alias'
+import { valueAt } from './args'
 import { withPromptSession, type PromptApi } from './prompt'
 import { msg } from './i18n'
 
@@ -130,10 +132,8 @@ export function parseArgs(argv: string[]): SetupOptions {
     if (arg === undefined) continue
 
     const valueFor = (name: string): string => {
-      const value = argv[++i]
-      if (value === undefined || value.startsWith('-')) {
-        throw new Error(msg().optionNeedsValue(name))
-      }
+      const { value, next } = valueAt(argv, i, name)
+      i = next
       return value
     }
 
@@ -286,6 +286,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   // can see up front.
   if (wantHook) assertClaudeHooksInstallable()
   if (wantCursor) assertCursorHooksInstallable()
+  if (wantAlias) assertAliasWritable(shell)
 
   // Validate every list before writing anything: a typo in --cursor-countries
   // must not leave the shared list already rewritten.

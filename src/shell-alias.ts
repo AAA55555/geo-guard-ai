@@ -329,6 +329,30 @@ function preservedBlock(
  */
 export type PreservedAliasKind = 'custom' | 'foreign'
 
+/**
+ * Refuses the install when the rc cannot be written. setup writes the alias
+ * last, so without this a read-only rc leaves the config and both hooks in
+ * place and only the final step failing — a half-install the user has to undo
+ * by hand.
+ *
+ * Only a clear permission error counts. On Windows accessSync cannot see ACL
+ * denials, and a probe failing for some other reason must not block an install
+ * that would have worked.
+ */
+export function assertAliasWritable(shell: ShellName = detectShell()): void {
+  const file = rcPathForShellResolved(shell)
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    const target = fs.existsSync(file) ? file : path.dirname(file)
+    fs.accessSync(target, fs.constants.W_OK)
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code
+    if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
+      throw new Error(msg().rcNotWritable(file))
+    }
+  }
+}
+
 export type InstallAliasResult = {
   shell: ShellName
   file: string
