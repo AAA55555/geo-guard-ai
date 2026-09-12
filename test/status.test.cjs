@@ -102,7 +102,34 @@ describe('geo-guard status', () => {
     assert.deepEqual(snapshot(home), {})
     assert.match(r.stdout, /no config file/)
     assert.match(r.stdout, /no such rc file/)
-    assert.equal(r.stdout.match(/no such file — the hook is not installed/g).length, 2)
+    // Claude Code's hook is missing; Cursor's is not even wanted here, because
+    // this sandbox has no ~/.cursor.
+    assert.equal(r.stdout.match(/no such file — the hook is not installed/g).length, 1)
+    assert.match(r.stdout, /no hook needed/)
+  })
+
+  test('a machine without Cursor is not reported as broken', () => {
+    // setup skips the Cursor hook when ~/.cursor is absent, so status demanding
+    // it meant a perfectly good install stayed at exit 1 forever — and the
+    // advice it printed, re-running setup, changed nothing.
+    // Не общий install(): он передаёт --cursor и сам создаёт ~/.cursor.
+    assert.equal(run(['setup', '--yes', '--countries', 'RU,NL']).status, 0)
+    assert.equal(fs.existsSync(path.join(home, '.cursor')), false)
+
+    const r = status()
+
+    assert.equal(r.status, 0)
+    assert.match(r.stdout, /no hook needed/)
+  })
+
+  test('once Cursor is there, its missing hook counts again', () => {
+    assert.equal(run(['setup', '--yes', '--countries', 'RU,NL']).status, 0)
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
+
+    const r = status()
+
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /no such file — the hook is not installed/)
   })
 
   test('missing config file → exit 1 naming it', () => {

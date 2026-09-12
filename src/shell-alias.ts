@@ -311,9 +311,18 @@ const NO_BLOCK: AliasBlock = Object.freeze({
   name: null,
 })
 
+/**
+ * The name a body defines. parseAliasBody is stricter on purpose — it refuses
+ * anything spread over lines, so foreign lines glued under our alias cannot be
+ * read as ours — but a body we already know is pristine can be spread over
+ * lines legitimately (the PowerShell function form), and it still has a name.
+ */
+const DEFINED_NAME_RE = /^(?:alias|function)\s+([\w.-]+)/
+
 function classify(body: string, broken: boolean): AliasBlock {
   if (isPristineAliasBody(body)) {
-    return { kind: 'pristine', body, broken, name: parseAliasBody(body)?.name ?? null }
+    const name = parseAliasBody(body)?.name ?? DEFINED_NAME_RE.exec(body.trim())?.[1] ?? null
+    return { kind: 'pristine', body, broken, name }
   }
   const parsed = parseAliasBody(body)
   if (parsed) return { kind: 'custom', body, broken, name: parsed.name }
