@@ -8,6 +8,17 @@ export const PACKAGE_NAME = 'geo-guard-ai'
 export const BEGIN_MARKER = `# >>> ${PACKAGE_NAME} begin >>>`
 export const END_MARKER = `# <<< ${PACKAGE_NAME} end <<<`
 
+/**
+ * The cursor-agent alias lives in its own marker block rather than as a second
+ * line inside the one above. Two reasons: a machine set up by an older version
+ * keeps its block byte-for-byte (including any flags the user added to it), and
+ * each alias can be classified, preserved or removed on its own — a body
+ * holding two lines would defeat the single-line parsing that keeps foreign
+ * content glued under our alias from being read as ours.
+ */
+export const CURSOR_BEGIN_MARKER = `# >>> ${PACKAGE_NAME} cursor-agent begin >>>`
+export const CURSOR_END_MARKER = `# <<< ${PACKAGE_NAME} cursor-agent end <<<`
+
 export type GeoGuardConfig = Readonly<{
   allowed: string[]
   timeoutMs: number

@@ -321,6 +321,10 @@ echo GEOGUARD_SMOKE_RAN
     Assert-Contains $r.StdOut 'Microsoft.PowerShell_profile.ps1' 'status did not look at the PowerShell profile'
     Assert-Contains $r.StdOut "alias 'claude'" 'status did not report the alias it should have found'
     Assert-Contains $r.StdOut 'our hook entry is in place' 'status did not find the Claude Code hook it installed'
+    # The cursor-agent alias has a section of its own. No cursor-agent on a CI
+    # runner, so it must report "not needed" and stay out of the exit code —
+    # exactly like the Cursor hook above.
+    Assert-Contains $r.StdOut 'cursor-agent alias:' 'status did not report the cursor-agent alias section'
     $after = Get-TreeSnapshot $sandbox
     if ($before -ne $after) {
         throw "status changed the sandbox — it must be read-only`nbefore:`n$before`nafter:`n$after"

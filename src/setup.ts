@@ -15,6 +15,7 @@ import { assertCursorHooksInstallable, cursorDirExists, installCursorHook } from
 import {
   aliasConflictFor,
   assertAliasWritable,
+  CURSOR_AGENT_TARGET,
   detectShell,
   installAlias,
   listSupportedShells,
@@ -23,6 +24,7 @@ import {
   DEFAULT_ALIAS_NAME,
   type ShellName,
 } from './shell-alias'
+import { commandExists } from './resolve-bin'
 import { valueAt } from './args'
 import { withPromptSession, type PromptApi } from './prompt'
 import { msg } from './i18n'
@@ -33,6 +35,7 @@ export type SetupOptions = Readonly<{
   shell: string | null
   hook: boolean | null
   alias: boolean | null
+  cursorAlias: boolean | null
   aliasName: string | null
   forceAlias: boolean
   cursor: boolean | null
@@ -116,6 +119,7 @@ export function parseArgs(argv: string[]): SetupOptions {
     shell: string | null
     hook: boolean | null
     alias: boolean | null
+    cursorAlias: boolean | null
     aliasName: string | null
     forceAlias: boolean
     cursor: boolean | null
@@ -127,6 +131,7 @@ export function parseArgs(argv: string[]): SetupOptions {
     shell: null,
     hook: null,
     alias: null,
+    cursorAlias: null,
     aliasName: null,
     forceAlias: false,
     cursor: null,
@@ -176,6 +181,10 @@ export function parseArgs(argv: string[]): SetupOptions {
       opts.alias = false
     } else if (arg === '--alias') {
       opts.alias = true
+    } else if (arg === '--no-cursor-alias') {
+      opts.cursorAlias = false
+    } else if (arg === '--cursor-alias') {
+      opts.cursorAlias = true
     } else if (arg === '--no-cursor') {
       opts.cursor = false
     } else if (arg === '--cursor') {
@@ -195,6 +204,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   let countries = opts.countries
   let wantHook = opts.hook
   let wantAlias = opts.alias
+  let wantCursorAlias = opts.cursorAlias
   let wantCursor = opts.cursor
   let shell: ShellName = detectedShell
   const requestedAliasName: string = opts.aliasName ?? DEFAULT_ALIAS_NAME
@@ -202,6 +212,13 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   let aliasSkipReason = ''
   let claudeCountries = opts.claudeCountries
   let cursorCountries = opts.cursorCountries
+  // Aliasing a command nobody has installed would replace the shell's honest
+  // "command not found" with our own "binary not found".
+  const cursorAgentPresent = commandExists(CURSOR_AGENT_TARGET.command)
+
+  // `--no-alias` is the answer to "stay out of my rc file", so it covers both
+  // aliases — unless the cursor one was asked for by name.
+  if (opts.alias === false && opts.cursorAlias === null) wantCursorAlias = false
 
   // The alias name goes into the rc as `alias <name>=…` — spaces and special
   // characters are not allowed, otherwise the line breaks. Allow letters/digits/_/-/.
@@ -247,9 +264,15 @@ export async function runSetup(argv: string[] = []): Promise<void> {
         }
       }
       if (wantAlias === null) {
-        wantAlias = await prompt.askYesNo(msg().promptAddAlias(aliasName, shell), {
+        wantAlias = await prompt.askYesNo(msg().promptAddAlias(aliasName, shell, 'claude'), {
           defaultYes: true,
         })
+      }
+      if (wantCursorAlias === null && cursorAgentPresent) {
+        wantCursorAlias = await prompt.askYesNo(
+          msg().promptAddCursorAlias(CURSOR_AGENT_TARGET.defaultName, shell),
+          { defaultYes: true },
+        )
       }
       if (!opts.shell) {
         const shellAnswer = await prompt.ask(msg().promptShell(listSupportedShells().join('/')), {
@@ -276,6 +299,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     if (wantHook === null) wantHook = true
     if (wantCursor === null) wantCursor = cursorDirExists()
     if (wantAlias === null) wantAlias = true
+    if (wantCursorAlias === null) wantCursorAlias = cursorAgentPresent
 
     if (wantAlias) {
       const resolved = pickFreeAliasName(shell, aliasName)
@@ -294,7 +318,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   // can see up front.
   if (wantHook) assertClaudeHooksInstallable()
   if (wantCursor) assertCursorHooksInstallable()
-  if (wantAlias) assertAliasWritable(shell)
+  if (wantAlias || wantCursorAlias) assertAliasWritable(shell)
 
   // Validate every list before writing anything: a typo in --cursor-countries
   // must not leave the shared list already rewritten.
@@ -342,6 +366,10 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     console.log(msg().cursorHookSkipped())
   }
 
+  // Printed once, after every rc change: two aliases in one run must not ask
+  // the user to reload their shell twice.
+  let rcHintFile: string | null = null
+
   if (wantAlias) {
     // The name was already checked for a collision above → skipConflictCheck,
     // to avoid throwing again. overwriteCustom only on an explicit --force-alias.
@@ -364,16 +392,47 @@ export async function runSetup(argv: string[] = []): Promise<void> {
       if (alias.name !== DEFAULT_ALIAS_NAME) {
         console.log(msg().aliasRunVia(alias.name))
       }
-      console.log('')
-      console.log(reloadHint(alias.file))
-      if (shell === 'bash' && process.platform === 'darwin') {
-        console.log(msg().macosBashProfileHint())
-      }
+      rcHintFile = alias.file
     }
   } else if (aliasSkipReason) {
     console.log(msg().aliasSkippedReason(aliasSkipReason))
   } else {
     console.log(msg().aliasSkipped())
+  }
+
+  if (wantCursorAlias) {
+    const name = CURSOR_AGENT_TARGET.defaultName
+    const conflict = aliasConflictFor(shell, name)
+    if (conflict) {
+      // No fallback name here, unlike `claude`: an alias under another name
+      // would not stand in front of the `cursor-agent` the user actually types,
+      // so it would look installed and guard nothing.
+      console.log(msg().cursorAliasSkippedConflict(name, conflict.existing))
+    } else {
+      const alias = installAlias(shell, {
+        name,
+        target: CURSOR_AGENT_TARGET,
+        skipConflictCheck: true,
+        overwriteCustom: opts.forceAlias,
+      })
+      if (alias.preserved) {
+        reportPreservedAlias(alias, name)
+      } else {
+        console.log(msg().cursorAliasInstalled(alias.file))
+        console.log(`   ${alias.snippet.split('\n')[1] || alias.snippet}`)
+        rcHintFile = alias.file
+      }
+    }
+  } else if (opts.cursorAlias !== false && !cursorAgentPresent) {
+    console.log(msg().cursorAliasSkippedMissing(CURSOR_AGENT_TARGET.command))
+  }
+
+  if (rcHintFile) {
+    console.log('')
+    console.log(reloadHint(rcHintFile))
+    if (shell === 'bash' && process.platform === 'darwin') {
+      console.log(msg().macosBashProfileHint())
+    }
   }
 
   console.log('')

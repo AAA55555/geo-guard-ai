@@ -22,7 +22,15 @@ import {
 import { configPath, loadConfig, readConfigFile, type GeoGuardConfigFile } from './config'
 import { showConfig } from './config-cmd'
 import { detectCountry, isAllowed } from './geo'
-import { detectShell, readAliasBlock, rcPathForShellResolved } from './shell-alias'
+import {
+  type AliasTarget,
+  CLAUDE_TARGET,
+  CURSOR_AGENT_TARGET,
+  detectShell,
+  readAliasBlock,
+  rcPathForShellResolved,
+} from './shell-alias'
+import { commandExists } from './resolve-bin'
 import { msg } from './i18n'
 
 function errorMessage(err: unknown): string {
@@ -135,18 +143,34 @@ function reportHook(
   return true
 }
 
-/** The marker block in the rc file: ours, ours-with-your-flags, or someone else's. */
-function reportAlias(): boolean {
+/**
+ * The marker block in the rc file: ours, ours-with-your-flags, or someone
+ * else's. One target per call — each alias has its own block and its own answer.
+ *
+ * `wanted` is for an alias setup would not have installed here: no cursor-agent
+ * on PATH means no alias to miss. A block that exists is always reported, even
+ * then — a leftover pointing at a command that is gone is worth seeing.
+ */
+function reportAlias(
+  target: AliasTarget,
+  header: (file: string) => string,
+  options: Readonly<{ wanted?: () => boolean }> = {},
+): boolean {
+  const wanted = options.wanted === undefined || options.wanted()
   let file: string
   let content: string
   try {
     // Inside the try: resolving the path reads the environment and the home
     // directory, and a report must not die on one section's bad luck.
     file = rcPathForShellResolved(detectShell())
-    console.log(msg().statusAliasHeader(file))
+    console.log(header(file))
 
     const state = fileState(file)
     if (state === 'missing') {
+      if (!wanted) {
+        console.log(msg().statusAliasNotNeeded(target.command))
+        return true
+      }
       console.log(msg().statusAliasFileMissing())
       return false
     }
@@ -162,9 +186,13 @@ function reportAlias(): boolean {
 
   // The same reading setup uses — answering this question twice is how the two
   // came to disagree about a block with no END marker.
-  const block = readAliasBlock(content)
+  const block = readAliasBlock(content, target)
 
   if (block.kind === 'none') {
+    if (!wanted) {
+      console.log(msg().statusAliasNotNeeded(target.command))
+      return true
+    }
     console.log(msg().statusAliasMissing())
     return false
   }
@@ -181,7 +209,7 @@ function reportAlias(): boolean {
   }
 
   if (block.kind === 'pristine') {
-    console.log(msg().statusAliasPristine(block.name ?? ''))
+    console.log(msg().statusAliasPristine(block.name ?? '', target.command))
     return true
   }
   // Still our alias, still routed through the geo-check — the user just added
@@ -271,7 +299,14 @@ export async function runStatus(argv: string[] = []): Promise<boolean> {
   )
   console.log('')
 
-  results.push(reportAlias())
+  results.push(reportAlias(CLAUDE_TARGET, msg().statusAliasHeader))
+  console.log('')
+
+  results.push(
+    reportAlias(CURSOR_AGENT_TARGET, msg().statusCursorAliasHeader, {
+      wanted: () => commandExists(CURSOR_AGENT_TARGET.command),
+    }),
+  )
   console.log('')
 
   // A config we could not read means the built-in defaults apply; the error was

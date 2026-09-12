@@ -54,7 +54,8 @@ export type Messages = {
   promptCountries: () => string
   promptInstallHook: () => string
   promptInstallCursorHook: () => string
-  promptAddAlias: (name: string, shell: string) => string
+  promptAddAlias: (name: string, shell: string, command: string) => string
+  promptAddCursorAlias: (name: string, shell: string) => string
   promptShell: (list: string) => string
   promptAliasName: () => string
   promptCursorSeparateCountries: () => string
@@ -86,6 +87,9 @@ export type Messages = {
   macosBashProfileHint: () => string
   aliasSkippedReason: (reason: string) => string
   aliasSkipped: () => string
+  cursorAliasSkippedConflict: (name: string, existing: string) => string
+  cursorAliasSkippedMissing: (command: string) => string
+  cursorAliasInstalled: (file: string) => string
   aliasSkipUserChose: () => string
   aliasSkipAllTaken: (name: string) => string
   setupDone: () => string
@@ -102,9 +106,11 @@ export type Messages = {
   statusHookFileMissing: () => string
   statusHookNotNeeded: () => string
   statusAliasHeader: (file: string) => string
+  statusCursorAliasHeader: (file: string) => string
+  statusAliasNotNeeded: (command: string) => string
   statusAliasFileMissing: () => string
   statusAliasMissing: () => string
-  statusAliasPristine: (name: string) => string
+  statusAliasPristine: (name: string, command: string) => string
   statusAliasCustom: (body: string) => string
   statusAliasForeign: (body: string) => string
   statusAliasBroken: (body: string) => string
@@ -179,6 +185,9 @@ setup options:
   --hook / --no-hook
   --cursor / --no-cursor    install the Cursor hook (~/.cursor/hooks.json)
   --alias / --no-alias
+  --cursor-alias / --no-cursor-alias
+                            alias cursor-agent → geo-guard cursor-agent
+                            (default: on when cursor-agent is on PATH)
   --alias-name cc           alias name (default claude; on collision suggests another)
   --force-alias             overwrite an alias block you edited by hand
   --claude-countries ES,PT  countries for Claude Code only
@@ -241,7 +250,10 @@ Examples:
   promptCountries: () => 'Allowed countries (ISO, comma-separated)',
   promptInstallHook: () => 'Install the Claude Code hook (UserPromptSubmit)?',
   promptInstallCursorHook: () => 'Install the Cursor hook (beforeSubmitPrompt, ~/.cursor/hooks.json)?',
-  promptAddAlias: (name, shell) => `Add alias ${name} → geo-guard claude to ${shell}?`,
+  promptAddAlias: (name, shell, command) =>
+    `Add alias ${name} → geo-guard ${command} to ${shell}?`,
+  promptAddCursorAlias: (name, shell) =>
+    `Add alias ${name} → geo-guard cursor-agent to ${shell}? (blocks the terminal client at launch)`,
   promptShell: list => `Shell for the alias (${list})`,
   promptAliasName: () => 'Name for the geo-guard alias (empty — skip alias)',
   promptCursorSeparateCountries: () => 'Use a different country list for Cursor?',
@@ -275,6 +287,10 @@ Examples:
     '   macOS: a login bash shell reads ~/.bash_profile. If the alias is not picked up — add `source ~/.bashrc` to ~/.bash_profile.',
   aliasSkippedReason: reason => `⏭  alias skipped: ${reason}`,
   aliasSkipped: () => '⏭  alias skipped',
+  cursorAliasSkippedConflict: (name, existing) =>
+    `⏭  cursor-agent alias skipped: '${name}' is already taken by ${existing}`,
+  cursorAliasSkippedMissing: command => `⏭  cursor-agent alias skipped: no ${command} on PATH`,
+  cursorAliasInstalled: file => `✅ cursor-agent alias → ${file}`,
   aliasSkipUserChose: () => 'you chose not to create the alias (name taken)',
   aliasSkipAllTaken: name =>
     `name '${name}' and fallbacks (cc/ccg/…) are taken — set your own: --alias-name <name>`,
@@ -291,9 +307,11 @@ Examples:
   statusHookFileMissing: () => '  ✖ no such file — the hook is not installed',
   statusHookNotNeeded: () => '  ⏭  the tool is not installed here — no hook needed',
   statusAliasHeader: file => `Shell alias: ${file}`,
+  statusCursorAliasHeader: file => `cursor-agent alias: ${file}`,
+  statusAliasNotNeeded: command => `  ⏭  ${command} is not installed here — no alias needed`,
   statusAliasFileMissing: () => '  ✖ no such rc file — the alias is not installed',
   statusAliasMissing: () => '  ✖ no geo-guard alias block in this file',
-  statusAliasPristine: name => `  ✅ alias '${name}' → geo-guard claude`,
+  statusAliasPristine: (name, command) => `  ✅ alias '${name}' → geo-guard ${command}`,
   statusAliasCustom: body => `  ✅ alias with flags of your own: ${body}`,
   statusAliasForeign: body => `  ✖ the geo-guard block holds foreign content: ${body}`,
   statusAliasBroken: body =>
@@ -381,6 +399,9 @@ setup options:
   --hook / --no-hook
   --cursor / --no-cursor    установить hook Cursor (~/.cursor/hooks.json)
   --alias / --no-alias
+  --cursor-alias / --no-cursor-alias
+                            alias cursor-agent → geo-guard cursor-agent
+                            (по умолчанию: включён, если cursor-agent есть в PATH)
   --alias-name cc           имя alias (дефолт claude; при коллизии предложит другое)
   --force-alias             перезаписать alias-блок, который правил вручную
   --claude-countries ES,PT  страны только для Claude Code
@@ -443,7 +464,10 @@ uninstall options:
   promptCountries: () => 'Разрешённые страны (ISO, через запятую)',
   promptInstallHook: () => 'Установить hook Claude Code (UserPromptSubmit)?',
   promptInstallCursorHook: () => 'Установить hook Cursor (beforeSubmitPrompt, ~/.cursor/hooks.json)?',
-  promptAddAlias: (name, shell) => `Добавить alias ${name} → geo-guard claude в ${shell}?`,
+  promptAddAlias: (name, shell, command) =>
+    `Добавить alias ${name} → geo-guard ${command} в ${shell}?`,
+  promptAddCursorAlias: (name, shell) =>
+    `Добавить alias ${name} → geo-guard cursor-agent в ${shell}? (блокирует терминальный клиент на запуске)`,
   promptShell: list => `Shell для alias (${list})`,
   promptAliasName: () => 'Имя для geo-guard alias (пусто — пропустить alias)',
   promptCursorSeparateCountries: () => 'Для Cursor нужен отдельный список стран?',
@@ -477,6 +501,10 @@ uninstall options:
     '   macOS: login-shell bash читает ~/.bash_profile. Если alias не подхватился — добавь `source ~/.bashrc` в ~/.bash_profile.',
   aliasSkippedReason: reason => `⏭  alias пропущен: ${reason}`,
   aliasSkipped: () => '⏭  alias пропущен',
+  cursorAliasSkippedConflict: (name, existing) =>
+    `⏭  alias cursor-agent пропущен: имя '${name}' уже занято — ${existing}`,
+  cursorAliasSkippedMissing: command => `⏭  alias cursor-agent пропущен: ${command} нет в PATH`,
+  cursorAliasInstalled: file => `✅ alias cursor-agent → ${file}`,
   aliasSkipUserChose: () => 'ты выбрал не создавать alias (имя занято)',
   aliasSkipAllTaken: name =>
     `имя '${name}' и запасные (cc/ccg/…) заняты — задай своё: --alias-name <имя>`,
@@ -493,9 +521,11 @@ uninstall options:
   statusHookFileMissing: () => '  ✖ файла нет — hook не установлен',
   statusHookNotNeeded: () => '  ⏭  инструмента здесь нет — hook не нужен',
   statusAliasHeader: file => `Alias в shell: ${file}`,
+  statusCursorAliasHeader: file => `Alias cursor-agent: ${file}`,
+  statusAliasNotNeeded: command => `  ⏭  ${command} здесь не установлен — alias не нужен`,
   statusAliasFileMissing: () => '  ✖ такого rc-файла нет — alias не установлен',
   statusAliasMissing: () => '  ✖ в этом файле нет geo-guard-блока с alias',
-  statusAliasPristine: name => `  ✅ alias '${name}' → geo-guard claude`,
+  statusAliasPristine: (name, command) => `  ✅ alias '${name}' → geo-guard ${command}`,
   statusAliasCustom: body => `  ✅ alias с твоими флагами: ${body}`,
   statusAliasForeign: body => `  ✖ в geo-guard-блоке лежит чужое содержимое: ${body}`,
   statusAliasBroken: body =>
