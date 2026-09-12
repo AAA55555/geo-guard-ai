@@ -6,7 +6,11 @@ on:
   pull_request:
 
 jobs:
+  # Full suite: typecheck, units, e2e and the packed-tarball check.
+  # The Node axis lives here because it is the cheap runner — the engines floor
+  # (18.20) and the current release are both about Node behaviour, not the OS.
   test:
+    name: ubuntu / node ${{ matrix.node }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -23,3 +27,55 @@ jobs:
       - run: npm test
       - run: npm run test:e2e
       - run: npm run test:pack
+
+  # Windows has a real code surface of its own — the powershell branch of
+  # shell-alias, %APPDATA% in config, PATHEXT in resolve-bin, spawning a .cmd in
+  # run — and nothing used to exercise it.
+  #
+  # Not repeated here: typecheck (tsc is platform-independent), test:e2e and
+  # test:pack (both are POSIX-only sh scripts that skip themselves on Windows,
+  # so running them would only print "skipped" and report a green that means
+  # nothing). scripts/windows-smoke.ps1 covers that ground instead.
+  #
+  # Node axis trimmed to the floor and the current release: 20 in the middle
+  # adds runtime without adding a code path.
+  windows:
+    name: windows / node ${{ matrix.node }}
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18.20', '22']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+
+      # Blocking: every assertion in it fails the job when the win32 path breaks.
+      - name: Windows smoke test
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/windows-smoke.ps1
+
+      # Not `npm test`: npm runs scripts through cmd.exe on Windows, which does
+      # not expand `test/*.test.cjs`, and only Node 22 expands that glob itself.
+      # The files are listed explicitly instead, so this behaves the same on
+      # every Node in the matrix. (dist/ is already built by the step above.)
+      #
+      # Advisory for the first rollout only. The suite reads as portable — temp
+      # dirs via os.tmpdir(), paths via path.join(), USERPROFILE set alongside
+      # HOME everywhere — and the one case that was definitely POSIX-only
+      # (GEO_GUARD_REAL_BIN=/bin/echo) now spawns process.execPath instead. What
+      # is left is unverified rather than known-broken: nobody has run this
+      # suite on Windows yet. Drop continue-on-error after the first green run,
+      # and treat anything it turns up as a bug in the tests or the win32 path.
+      - name: Unit suite (advisory on Windows)
+        continue-on-error: true
+        run: |
+          $files = Get-ChildItem -Path test -Filter *.test.cjs | ForEach-Object { $_.FullName }
+          node --test @files

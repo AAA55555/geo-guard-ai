@@ -364,7 +364,9 @@ describe('profileForCommand', () => {
             GEO_GUARD_CONFIG_DIR: tmp,
             GEO_GUARD_CONFIG_FILE: path.join(tmp, 'config.json'),
             GEO_GUARD_PROVIDERS: 'https://example.test/fake',
-            GEO_GUARD_REAL_BIN: '/bin/echo',
+            // node сам себе подопытный: есть на любой платформе, в отличие
+            // от /bin/echo, и на `--version` печатает версию и выходит нулём.
+            GEO_GUARD_REAL_BIN: process.execPath,
             GEO_GUARD_LANG: 'en',
             GEO_GUARD_ALLOWED: undefined,
           },

@@ -179,7 +179,7 @@ function stripOrphanBeginMarker(content: string): string {
 }
 
 /** The body inside the marker block (trimmed), or null if there's no block. */
-function markedBlockBody(content: string): string | null {
+export function markedBlockBody(content: string): string | null {
   const begin = content.indexOf(BEGIN_MARKER)
   if (begin === -1) return null
   const end = content.indexOf(END_MARKER, begin)

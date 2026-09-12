@@ -207,6 +207,7 @@ geo-guard setup [options]       # configure
 geo-guard uninstall [options]   # remove hook + alias + config
 geo-guard config [options]      # show / change the allowed countries
 geo-guard check                 # check for the hook (exit 0 = ok, 2 = block)
+geo-guard status                # what is installed (exit 0 = all in place, 1 = not)
 geo-guard claude [args…]        # wrapper: check geo and launch claude
 geo-guard <command> [args…]     # same for any command
 geo-guard -- <command> [args…]  # same, when the name looks like a subcommand
@@ -361,6 +362,47 @@ Safety on uninstall:
 - our marker block is removed even if you added your own flags to the alias inside it (`geo-guard claude --dangerously-skip-permissions` is still our alias). But if the markers hold something **foreign** — not a `geo-guard` alias at all — the block is **left as is**; uninstall doesn't remove it but warns instead. You never know what important thing was added there;
 - our hook entries in both `settings.json` and `hooks.json` are removed **by matching the command string**, the same way in both files — even if you'd hand-edited `timeout` or added a flag, it's still recognized and removed; the automatic `.bak` is your safety net if that's not what you wanted;
 - the rest of `settings.json` / `hooks.json` and both `.bak` files aren't touched.
+
+## Status
+
+`geo-guard status` answers "is this thing actually installed and working?" — it **reads only**: no file is created, changed or backed up, so it is safe to run on a broken setup.
+
+```console
+$ geo-guard status
+Config: /Users/me/.config/geo-guard-ai/config.json
+  shared   allowed: RU, NL (from the file)   timeout: 5s
+  claude   allowed: RU, NL   (inherited)
+  cursor   allowed: RU, NL   (inherited)
+  ✅ config file found
+
+Claude Code hook: /Users/me/.claude/settings.json
+  ✅ our hook entry is in place
+
+Cursor hook: /Users/me/.cursor/hooks.json
+  ✖ our hook entry is missing
+
+Shell alias: /Users/me/.zshrc
+  ✅ alias with flags of your own: alias claude="geo-guard claude --dangerously-skip-permissions"
+
+Country:
+  ✅ RU — allowed (allowed: RU, NL)
+
+✖ Something is missing or broken (see the ✖ lines above).
+   Fix it with: geo-guard setup
+```
+
+Exit code: `0` — everything geo-guard installs is in place, `1` — something is missing or broken, so it works in a script:
+
+```bash
+geo-guard status >/dev/null || geo-guard setup --yes
+```
+
+What it checks:
+
+- the config file: whether it exists and what the effective policy is (the same output as `geo-guard config`);
+- both hook files: whether our entry is there, **and** whether the file is in a shape we could install into at all — a `settings.json` full of broken JSON, or a `hooks` key holding a string, shows up as a line of the report instead of a crash;
+- the alias block in your rc file: ours, ours with flags you added (still fine), or foreign content inside our markers (not fine);
+- the current country and whether your policy allows it. This is the one part that does **not** affect the exit code: a blocked country is `geo-guard check`'s business, not a sign that the install is broken. With no network it says `could not determine` instead of failing.
 
 ## Verify
 
