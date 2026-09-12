@@ -120,6 +120,16 @@ function stripOurHooks(data: CursorHooksFile): CursorHooksFile {
   return data
 }
 
+/** Whether our entry is in the file right now. Reads only — see the Claude Code side. */
+export function cursorHookInstalled(): boolean {
+  const { data } = readHooksFile()
+  const hooks = data?.hooks
+  if (!isPlainObject(hooks)) return false
+  const list = hooks.beforeSubmitPrompt
+  if (!Array.isArray(list)) return false
+  return list.some(hook => isPlainObject(hook) && isOurHook(hook))
+}
+
 export function installCursorHook(): { file: string; command: string; kept: boolean } {
   const { file, data } = readHooksFile()
   assertShape(file, data)

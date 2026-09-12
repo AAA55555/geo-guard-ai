@@ -88,6 +88,30 @@ export type Messages = {
   setupDone: () => string
   configPathLine: (path: string) => string
 
+  // --- status command ---
+  unknownStatusArg: (arg: string) => string
+  statusConfigPresent: () => string
+  statusConfigMissing: () => string
+  statusClaudeHookHeader: (file: string) => string
+  statusCursorHookHeader: (file: string) => string
+  statusHookInstalled: () => string
+  statusHookMissing: () => string
+  statusHookFileMissing: () => string
+  statusAliasHeader: (file: string) => string
+  statusAliasFileMissing: () => string
+  statusAliasMissing: () => string
+  statusAliasPristine: (name: string) => string
+  statusAliasCustom: (body: string) => string
+  statusAliasForeign: (body: string) => string
+  statusCountryHeader: () => string
+  statusCountryAllowed: (country: string, allowed: string) => string
+  statusCountryNotAllowed: (country: string, allowed: string) => string
+  statusCountryUnknown: () => string
+  statusProblem: (message: string) => string
+  statusOk: () => string
+  statusNotOk: () => string
+  statusSetupHint: () => string
+
   // --- check / wrap (run.ts) ---
   checkNoCountryBlocked: () => string
   checkCountryNotAllowedBlocked: (country: string, allowed: string, profile?: string) => string
@@ -136,6 +160,7 @@ Usage:
   geo-guard uninstall [--keep-config]  remove our traces (hook, alias, config)
   geo-guard config [options]    show / change the allowed countries
   geo-guard check               hook check (exit 0/2)
+  geo-guard status              what is installed and working (exit 0/1)
   geo-guard <command> [args…]   check geo and run the command
   geo-guard -- <command> […]    same, for a name that looks like a subcommand
 
@@ -242,6 +267,30 @@ Examples:
   setupDone: () => 'Done. Verify: geo-guard check && geo-guard claude --version',
   configPathLine: path => `Config: ${path}`,
 
+  unknownStatusArg: arg => `Unknown status argument: ${arg}`,
+  statusConfigPresent: () => '  ✅ config file found',
+  statusConfigMissing: () => '  ✖ no config file — the built-in defaults are in effect',
+  statusClaudeHookHeader: file => `Claude Code hook: ${file}`,
+  statusCursorHookHeader: file => `Cursor hook: ${file}`,
+  statusHookInstalled: () => '  ✅ our hook entry is in place',
+  statusHookMissing: () => '  ✖ our hook entry is missing',
+  statusHookFileMissing: () => '  ✖ no such file — the hook is not installed',
+  statusAliasHeader: file => `Shell alias: ${file}`,
+  statusAliasFileMissing: () => '  ✖ no such rc file — the alias is not installed',
+  statusAliasMissing: () => '  ✖ no geo-guard alias block in this file',
+  statusAliasPristine: name => `  ✅ alias '${name}' → geo-guard claude`,
+  statusAliasCustom: body => `  ✅ alias with flags of your own: ${body}`,
+  statusAliasForeign: body => `  ✖ the geo-guard block holds foreign content: ${body}`,
+  statusCountryHeader: () => 'Country:',
+  statusCountryAllowed: (country, allowed) => `  ✅ ${country} — allowed (allowed: ${allowed})`,
+  statusCountryNotAllowed: (country, allowed) =>
+    `  🚫 ${country} — not allowed (allowed: ${allowed})`,
+  statusCountryUnknown: () => '  ⚠️  could not determine (no network?)',
+  statusProblem: message => `  ✖ ${message}`,
+  statusOk: () => '✅ Everything geo-guard installs is in place.',
+  statusNotOk: () => '✖ Something is missing or broken (see the ✖ lines above).',
+  statusSetupHint: () => '   Fix it with: geo-guard setup',
+
   checkNoCountryBlocked: () =>
     '🚫 Geo-check: could not determine country (no network?). Request blocked.',
   checkCountryNotAllowedBlocked: (country, allowed, profile) => {
@@ -300,6 +349,7 @@ const ru: Messages = {
   geo-guard uninstall [--keep-config]  убрать наши следы (hook, alias, конфиг)
   geo-guard config [options]    показать / изменить разрешённые страны
   geo-guard check               hook-проверка (exit 0/2)
+  geo-guard status              что установлено и работает (exit 0/1)
   geo-guard <command> [args…]   проверить гео и запустить команду
   geo-guard -- <command> […]    то же, если имя похоже на подкоманду
 
@@ -405,6 +455,30 @@ uninstall options:
     `имя '${name}' и запасные (cc/ccg/…) заняты — задай своё: --alias-name <имя>`,
   setupDone: () => 'Готово. Проверка: geo-guard check && geo-guard claude --version',
   configPathLine: path => `Конфиг: ${path}`,
+
+  unknownStatusArg: arg => `Неизвестный аргумент status: ${arg}`,
+  statusConfigPresent: () => '  ✅ файл конфига найден',
+  statusConfigMissing: () => '  ✖ файла конфига нет — действуют встроенные дефолты',
+  statusClaudeHookHeader: file => `Hook Claude Code: ${file}`,
+  statusCursorHookHeader: file => `Hook Cursor: ${file}`,
+  statusHookInstalled: () => '  ✅ наша запись hook на месте',
+  statusHookMissing: () => '  ✖ нашей записи hook нет',
+  statusHookFileMissing: () => '  ✖ файла нет — hook не установлен',
+  statusAliasHeader: file => `Alias в shell: ${file}`,
+  statusAliasFileMissing: () => '  ✖ такого rc-файла нет — alias не установлен',
+  statusAliasMissing: () => '  ✖ в этом файле нет geo-guard-блока с alias',
+  statusAliasPristine: name => `  ✅ alias '${name}' → geo-guard claude`,
+  statusAliasCustom: body => `  ✅ alias с твоими флагами: ${body}`,
+  statusAliasForeign: body => `  ✖ в geo-guard-блоке лежит чужое содержимое: ${body}`,
+  statusCountryHeader: () => 'Страна:',
+  statusCountryAllowed: (country, allowed) => `  ✅ ${country} — разрешена (разрешены: ${allowed})`,
+  statusCountryNotAllowed: (country, allowed) =>
+    `  🚫 ${country} — не разрешена (разрешены: ${allowed})`,
+  statusCountryUnknown: () => '  ⚠️  определить не удалось (нет сети?)',
+  statusProblem: message => `  ✖ ${message}`,
+  statusOk: () => '✅ Всё, что ставит geo-guard, на месте.',
+  statusNotOk: () => '✖ Чего-то не хватает или что-то сломано (см. строки с ✖ выше).',
+  statusSetupHint: () => '   Починить: geo-guard setup',
 
   checkNoCountryBlocked: () =>
     '🚫 Geo-check: не удалось определить страну (нет сети?). Запрос заблокирован.',

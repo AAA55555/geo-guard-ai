@@ -2,6 +2,7 @@ import path from 'node:path'
 
 import { runConfig } from './config-cmd'
 import { runSetup } from './setup'
+import { runStatus } from './status'
 import { runUninstall } from './uninstall'
 import { runCheck, runWrap } from './run'
 import { packageVersion } from './pkg'
@@ -12,6 +13,7 @@ const SUBCOMMANDS = new Set([
   'uninstall',
   'config',
   'check',
+  'status',
   'help',
   '--help',
   '-h',
@@ -21,7 +23,7 @@ const SUBCOMMANDS = new Set([
 ])
 
 /** Commands we do have, for the "no such command" message. */
-const COMMAND_NAMES = ['setup', 'config', 'check', 'uninstall']
+const COMMAND_NAMES = ['setup', 'config', 'check', 'status', 'uninstall']
 
 /**
  * Verbs a CLI plausibly has but geo-guard doesn't. Without this, `geo-guard
@@ -32,7 +34,6 @@ const COMMAND_NAMES = ['setup', 'config', 'check', 'uninstall']
  */
 const COMMAND_LOOKALIKES = new Set([
   'reset',
-  'status',
   'list',
   'show',
   'info',
@@ -46,7 +47,6 @@ const COMMAND_LOOKALIKES = new Set([
   'disable',
   'start',
   'stop',
-  'doctor',
 ])
 
 function printHelp(): void {
@@ -82,6 +82,12 @@ async function main(): Promise<void> {
       case 'check':
         await runCheck(argv.slice(1))
         return
+      case 'status': {
+        // Exit code is the point of the command: 0 = in place, 1 = something to fix.
+        const ok = await runStatus(argv.slice(1))
+        if (!ok) process.exit(1)
+        return
+      }
       default:
         printHelp()
         process.exit(1)

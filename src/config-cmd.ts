@@ -94,7 +94,7 @@ function sourceLabel(profile?: ProfileName): string {
 }
 
 /** Prints the effective config: the shared policy and what each tool ends up with. */
-function showConfig(): void {
+export function showConfig(): void {
   console.log(msg().configPathLine(configPath()))
 
   const shared = loadConfig()

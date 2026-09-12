@@ -207,6 +207,26 @@ function updateOurHooksInPlace(settings: ClaudeSettings): {
   return { found, kept, emptied }
 }
 
+/**
+ * Whether our entry is in the file right now. Reads only — `status` must be
+ * able to ask this without the install path's habit of creating what is missing.
+ */
+export function claudeHookInstalled(): boolean {
+  const { settings } = readSettings()
+  const hooks = settings?.hooks
+  if (!isPlainObject(hooks)) return false
+  const matchers = hooks.UserPromptSubmit
+  if (!Array.isArray(matchers)) return false
+
+  for (const matcher of matchers) {
+    if (!isPlainObject(matcher)) continue
+    const list = matcher.hooks
+    if (!Array.isArray(list)) continue
+    if (list.some(hook => isOurHook(hook as ClaudeHook))) return true
+  }
+  return false
+}
+
 export function installClaudeHook(): { file: string; command: string; kept: boolean } {
   const { file, settings } = readSettings()
   assertShape(file, settings)
