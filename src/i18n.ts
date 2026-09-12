@@ -119,6 +119,8 @@ export type Messages = {
   invalidJson: (file: string, message: string) => string
   invalidHookShape: (file: string, key: string) => string
   invalidHookRoot: (file: string) => string
+  rcNotWritable: (file: string) => string
+  notACommand: (word: string, list: string) => string
   aliasAlreadyExists: (name: string, existing: string) => string
   realBinNotFound: (path: string) => string
   binNotFound: (command: string) => string
@@ -135,6 +137,7 @@ Usage:
   geo-guard config [options]    show / change the allowed countries
   geo-guard check               hook check (exit 0/2)
   geo-guard <command> [args…]   check geo and run the command
+  geo-guard -- <command> […]    same, for a name that looks like a subcommand
 
 setup options:
   -y, --yes                 no questions (defaults)
@@ -278,6 +281,9 @@ Examples:
     `${file}: '${key}' is not the shape the hook config expects. Fix or remove it by hand — geo-guard will not rewrite someone else's data.`,
   invalidHookRoot: file =>
     `${file}: the file does not hold a JSON object. Fix or remove it by hand — geo-guard will not rewrite someone else's data.`,
+  rcNotWritable: file => `Cannot write ${file}. Fix its permissions, or run setup with --no-alias.`,
+  notACommand: (word, list) =>
+    `geo-guard has no '${word}' command (commands: ${list}). To run a program called '${word}' through the geo-check, be explicit: geo-guard -- ${word}`,
   aliasAlreadyExists: (name, existing) => `Alias '${name}' already exists: ${existing}`,
   realBinNotFound: path => `GEO_GUARD_REAL_BIN not found: ${path}`,
   binNotFound: command => `Binary not found: ${command}`,
@@ -295,6 +301,7 @@ const ru: Messages = {
   geo-guard config [options]    показать / изменить разрешённые страны
   geo-guard check               hook-проверка (exit 0/2)
   geo-guard <command> [args…]   проверить гео и запустить команду
+  geo-guard -- <command> […]    то же, если имя похоже на подкоманду
 
 setup options:
   -y, --yes                 без вопросов (дефолты)
@@ -438,6 +445,9 @@ uninstall options:
     `${file}: '${key}' не той формы, которую ожидает hook-конфиг. Поправь или убери руками — geo-guard не переписывает чужие данные.`,
   invalidHookRoot: file =>
     `${file}: в файле не JSON-объект. Поправь или убери руками — geo-guard не переписывает чужие данные.`,
+  rcNotWritable: file => `Не могу писать в ${file}. Поправь права или запусти setup с --no-alias.`,
+  notACommand: (word, list) =>
+    `У geo-guard нет команды '${word}' (команды: ${list}). Чтобы прогнать через гео-проверку программу с таким именем, скажи явно: geo-guard -- ${word}`,
   aliasAlreadyExists: (name, existing) => `Уже существует alias '${name}': ${existing}`,
   realBinNotFound: path => `GEO_GUARD_REAL_BIN не найден: ${path}`,
   binNotFound: command => `Не найден бинарь: ${command}`,

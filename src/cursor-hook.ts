@@ -13,6 +13,15 @@ type CursorHook = {
   [key: string]: unknown
 }
 
+/** Our entry as it should end up: the user's fields kept, our command enforced. */
+function mergeOurHook(hook: CursorHook): CursorHook {
+  return { ...defaultHook(), ...hook, command: hookCommand() }
+}
+
+function isDefaultHook(hook: CursorHook): boolean {
+  return JSON.stringify(hook) === JSON.stringify(defaultHook())
+}
+
 /** What we install when there is nothing to preserve. */
 function defaultHook(): CursorHook {
   return {
@@ -38,7 +47,11 @@ type CursorHooksFile = {
  */
 export function assertCursorHooksInstallable(): void {
   const { file, data } = readHooksFile()
+  assertShape(file, data)
+}
 
+/** The same check against a hooks object the caller has already read. */
+function assertShape(file: string, data: CursorHooksFile): void {
   // See the Claude Code side: an array or a primitive at the root would let the
   // install "succeed" while writing nothing at all.
   if (!isPlainObject(data)) {
@@ -108,8 +121,8 @@ function stripOurHooks(data: CursorHooksFile): CursorHooksFile {
 }
 
 export function installCursorHook(): { file: string; command: string; kept: boolean } {
-  assertCursorHooksInstallable()
   const { file, data } = readHooksFile()
+  assertShape(file, data)
 
   // Update our entry in place — the user may have raised the timeout or turned
   // failClosed off; only the command is ours to rewrite. Duplicates are dropped.
@@ -117,6 +130,12 @@ export function installCursorHook(): { file: string; command: string; kept: bool
   let found = false
   let kept = false
   if (Array.isArray(list) && data.hooks) {
+    // Same as the Claude Code side: the user's settings can sit on any of the
+    // duplicates, so the survivor is built from whichever one carries them.
+    const ours = list.filter(hook => isPlainObject(hook) && isOurHook(hook))
+    const template = ours.find(hook => !isDefaultHook(mergeOurHook(hook))) ?? ours[0]
+    kept = template !== undefined && !isDefaultHook(mergeOurHook(template))
+
     const next: CursorHook[] = []
     for (const hook of list) {
       if (!isPlainObject(hook) || !isOurHook(hook)) {
@@ -125,9 +144,7 @@ export function installCursorHook(): { file: string; command: string; kept: bool
       }
       if (found) continue
       found = true
-      const updated: CursorHook = { ...defaultHook(), ...hook, command: hookCommand() }
-      kept = JSON.stringify(updated) !== JSON.stringify(defaultHook())
-      next.push(updated)
+      next.push(mergeOurHook(template ?? hook))
     }
     // Same discipline as the Claude Code side: a list holding nothing of ours
     // is left as the object it already was, not rebuilt into an equal one.

@@ -18,6 +18,7 @@ import {
   PROFILE_NAMES,
   type ProfileName,
 } from './config'
+import { valueAt } from './args'
 import { msg } from './i18n'
 
 export type ConfigOptions = Readonly<{
@@ -52,10 +53,8 @@ export function parseConfigArgs(argv: string[]): ConfigOptions {
     if (arg === undefined) continue
 
     const valueFor = (name: string): string => {
-      const value = argv[++i]
-      if (value === undefined || value.startsWith('-')) {
-        throw new Error(msg().optionNeedsValue(name))
-      }
+      const { value, next } = valueAt(argv, i, name)
+      i = next
       return value
     }
 

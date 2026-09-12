@@ -46,7 +46,11 @@ type ClaudeSettings = {
  */
 export function assertClaudeHooksInstallable(): void {
   const { file, settings } = readSettings()
+  assertShape(file, settings)
+}
 
+/** The same check against a settings object the caller has already read. */
+function assertShape(file: string, settings: ClaudeSettings): void {
   // The root first: on an array or a primitive every `??=` below silently does
   // nothing useful, JSON.stringify drops what we added, and setup reports a
   // hook it never installed — the machine ends up ungated but looking fine.
@@ -126,6 +130,33 @@ function stripOurHooks(settings: ClaudeSettings): ClaudeSettings {
   return settings
 }
 
+/** Our entry as it should end up: the user's fields kept, our command enforced. */
+function mergeOurHook(hook: ClaudeHook): ClaudeHook {
+  return { ...defaultHook(), ...hook, command: hookCommand() }
+}
+
+function isDefaultHook(hook: ClaudeHook): boolean {
+  return JSON.stringify(hook) === JSON.stringify(defaultHook())
+}
+
+/**
+ * The one of our entries carrying settings of the user's own, or simply the
+ * first if none do. Looks across every matcher: duplicates from older installs
+ * can appear anywhere in the file.
+ */
+function richestOurHook(matchers: readonly ClaudeHookMatcher[]): ClaudeHook | undefined {
+  let first: ClaudeHook | undefined
+  for (const matcher of matchers) {
+    if (!isPlainObject(matcher) || !Array.isArray(matcher.hooks)) continue
+    for (const hook of matcher.hooks) {
+      if (!isOurHook(hook)) continue
+      first ??= hook
+      if (!isDefaultHook(mergeOurHook(hook))) return hook
+    }
+  }
+  return first
+}
+
 /**
  * Updates our entry in place (keeping the user's timeout/statusMessage and the
  * matcher it sits in) and drops any duplicates. Returns whether one was found
@@ -140,8 +171,13 @@ function updateOurHooksInPlace(settings: ClaudeSettings): {
   if (!Array.isArray(matchers)) return { found: false, kept: false, emptied: [] }
 
   let found = false
-  let kept = false
   const emptied: ClaudeHookMatcher[] = []
+
+  // Which of our entries the survivor is built from. Duplicates are collapsed,
+  // and the settings the user edited can sit on any of them — taking the first
+  // one blindly would drop a timeout they set on the second.
+  const template = richestOurHook(matchers)
+  const kept = template !== undefined && !isDefaultHook(mergeOurHook(template))
 
   for (const matcher of matchers) {
     if (!isPlainObject(matcher)) continue
@@ -158,12 +194,10 @@ function updateOurHooksInPlace(settings: ClaudeSettings): {
         continue
       }
       touched = true
-      // Only the first one survives — the rest are leftovers from older installs.
+      // Only one survives — the rest are leftovers from older installs.
       if (found) continue
       found = true
-      const updated: ClaudeHook = { ...defaultHook(), ...hook, command: hookCommand() }
-      kept = JSON.stringify(updated) !== JSON.stringify(defaultHook())
-      next.push(updated)
+      next.push(mergeOurHook(template ?? hook))
     }
     if (!touched) continue
     matcher.hooks = next
@@ -174,8 +208,8 @@ function updateOurHooksInPlace(settings: ClaudeSettings): {
 }
 
 export function installClaudeHook(): { file: string; command: string; kept: boolean } {
-  assertClaudeHooksInstallable()
   const { file, settings } = readSettings()
+  assertShape(file, settings)
 
   const { found, kept, emptied } = updateOurHooksInPlace(settings)
   if (!found) {
