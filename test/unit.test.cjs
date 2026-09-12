@@ -2100,3 +2100,77 @@ describe('unknown top-level option', () => {
     assert.doesNotMatch(r.stderr + r.stdout, /not found in PATH/)
   })
 })
+
+describe('profileForCommand', () => {
+  const { profileForCommand } = require('../dist/run')
+
+  test('maps the wrapped binary to its tool', () => {
+    assert.equal(profileForCommand('claude'), 'claude')
+    assert.equal(profileForCommand('cursor'), 'cursor')
+    assert.equal(profileForCommand('cursor-agent'), 'cursor')
+  })
+
+  test('looks at the binary name, not the path or the extension', () => {
+    // Разделитель путей разбирает path.basename, то есть по правилам текущей
+    // платформы — виндовый путь с обратными слешами проверять здесь нечем.
+    assert.equal(profileForCommand('/usr/local/bin/claude'), 'claude')
+    assert.equal(profileForCommand('claude.cmd'), 'claude')
+    assert.equal(profileForCommand('claude.exe'), 'claude')
+    assert.equal(profileForCommand('claude.bat'), 'claude')
+    assert.equal(profileForCommand('claude.ps1'), 'claude')
+    assert.equal(profileForCommand('CLAUDE'), 'claude')
+    // то же самое должно работать и для второго инструмента, не только claude
+    assert.equal(profileForCommand(path.join('/opt/bin', 'cursor-agent')), 'cursor')
+    assert.equal(profileForCommand('Cursor-Agent.cmd'), 'cursor')
+  })
+
+  test('anything else wraps under the shared policy', () => {
+    // Не 'claude-code' и не 'myclaude': имя должно совпадать целиком, иначе
+    // чужой бинарь молча поехал бы по политике Claude Code.
+    assert.equal(profileForCommand('claude-code'), undefined)
+    assert.equal(profileForCommand('myclaude'), undefined)
+    assert.equal(profileForCommand('echo'), undefined)
+    assert.equal(profileForCommand(''), undefined)
+  })
+
+  test('the wrapper actually applies the profile it picks', () => {
+    // Сам по себе маппинг ничего не значит, если runWrap его не использует:
+    // подмена профиля на уровне обёртки прошла бы молча мимо юнит-тестов выше.
+    const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+    const mockFetch = path.join(__dirname, 'fixtures', 'mock-fetch.cjs') // страна RU
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-wrap-'))
+    try {
+      // общий уровень RU разрешает, профиль claude — нет
+      fs.writeFileSync(
+        path.join(tmp, 'config.json'),
+        JSON.stringify({ allowed: ['RU'], profiles: { claude: { allowed: ['NL'] } } }),
+      )
+
+      const run = command =>
+        spawnSync(process.execPath, [cli, command, '--version'], {
+          env: {
+            ...process.env,
+            NODE_OPTIONS: `--require ${mockFetch}`,
+            GEO_GUARD_CONFIG_DIR: tmp,
+            GEO_GUARD_CONFIG_FILE: path.join(tmp, 'config.json'),
+            GEO_GUARD_PROVIDERS: 'https://example.test/fake',
+            GEO_GUARD_REAL_BIN: '/bin/echo',
+            GEO_GUARD_LANG: 'en',
+            GEO_GUARD_ALLOWED: undefined,
+          },
+          encoding: 'utf8',
+        })
+
+      // `geo-guard claude …` идёт по профилю claude → блок
+      const claude = run('claude')
+      assert.notEqual(claude.status, 0)
+      assert.match(claude.stderr, /'claude' policy/)
+
+      // любая другая команда — по общему списку, который RU разрешает
+      const other = run('somethingelse')
+      assert.equal(other.status, 0)
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true })
+    }
+  })
+})

@@ -391,5 +391,6 @@ Git hooks (Husky):
 1. `geo-guard setup --cursor` → block a prompt in Cursor chat from a disallowed country → confirm it blocks with our message, and that the hook log shows `Removed duplicate claude-user hook for beforeSubmitPrompt: command:geo-guard check` (Output panel → hooks channel) — the sign the check ran once, not twice.
 2. Turn off Cursor's **Third-Party Imports** setting → the block above should still work, gated purely by `~/.cursor/hooks.json`.
 3. `geo-guard check | cat` → byte-exact `{"continue":true}`, no trailing newline, no extra output.
+4. With **different countries per tool** (`geo-guard config --countries <allowed> --profile claude` and `--countries <blocked> --profile cursor`): a Claude Code prompt goes through while a Cursor prompt blocks, then swap the two lists and confirm it reverses. This is the only check that the run-time host detection works against the real hosts — the profile is read from the payload each one pipes to stdin, and `test:e2e` never sees those. Confirm the `Removed duplicate claude-user hook` line is *still* in Cursor's hook log while doing it: if that line is gone, the two config files have drifted apart and Cursor is running the check twice per prompt.
 
 License — [MIT](./LICENSE).

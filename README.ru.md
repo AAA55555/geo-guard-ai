@@ -391,5 +391,6 @@ Git hooks (Husky):
 1. `geo-guard setup --cursor` → заблокировать промпт в чате Cursor из запрещённой страны → убедиться, что блокирует нашим текстом, и что в логе hooks видна строка `Removed duplicate claude-user hook for beforeSubmitPrompt: command:geo-guard check` (панель Output → канал hooks) — признак того, что проверка ушла один раз, а не дважды.
 2. Выключить в Cursor настройку **Third-Party Imports** → блокировка выше должна продолжать работать, теперь чисто через `~/.cursor/hooks.json`.
 3. `geo-guard check | cat` → байт в байт `{"continue":true}`, без завершающего перевода строки и лишнего вывода.
+4. С **разными странами по инструментам** (`geo-guard config --countries <разрешённая> --profile claude` и `--countries <запрещённая> --profile cursor`): промпт в Claude Code проходит, промпт в Cursor блокируется; поменять списки местами и убедиться, что поведение зеркалится. Это единственная проверка того, что определение хоста в рантайме работает против настоящих хостов — профиль читается из payload, который каждый из них пишет в stdin, а `test:e2e` этих payload не видит вовсе. Заодно убедиться, что строка `Removed duplicate claude-user hook` в логе hooks Cursor всё ещё на месте: если она пропала, два конфига разъехались и Cursor гоняет проверку дважды на каждый промпт.
 
 Лицензия — [MIT](./LICENSE).
