@@ -11,11 +11,13 @@ import {
   configPath,
   isProfileName,
   loadConfig,
+  readConfigFile,
   removeProfile,
   resetConfig,
   validatedAllowed,
   writeConfig,
   PROFILE_NAMES,
+  type GeoGuardConfigFile,
   type ProfileName,
 } from './config'
 import { valueAt } from './args'
@@ -83,8 +85,8 @@ export function parseConfigArgs(argv: string[]): ConfigOptions {
  * file can hold the defaults while the printed value is something else
  * entirely, and `(inherited)` on top of that reads as a plain lie.
  */
-function sourceLabel(profile?: ProfileName): string {
-  const source = allowedSource(profile)
+function sourceLabel(file: GeoGuardConfigFile, profile?: ProfileName): string {
+  const source = allowedSource(profile, file)
   if (source.kind === 'env') return msg().configSourceEnv(source.name)
   if (source.kind === 'profile') return msg().configSourceProfile()
   if (source.kind === 'defaults') return msg().configSourceDefaults()
@@ -97,14 +99,24 @@ function sourceLabel(profile?: ProfileName): string {
 export function showConfig(): void {
   console.log(msg().configPathLine(configPath()))
 
-  const shared = loadConfig()
+  // Read once for the whole report: every line below asks the same file the
+  // same question, and `geo-guard status` calls this too.
+  const file = readConfigFile()
+
+  const shared = loadConfig(undefined, file)
   console.log(
-    msg().configLineShared(shared.allowed.join(', '), shared.timeoutMs / 1000, sourceLabel()),
+    msg().configLineShared(
+      shared.allowed.join(', '),
+      shared.timeoutMs / 1000,
+      sourceLabel(file),
+    ),
   )
 
   for (const profile of PROFILE_NAMES) {
-    const config = loadConfig(profile)
-    console.log(msg().configLineProfile(profile, config.allowed.join(', '), sourceLabel(profile)))
+    const config = loadConfig(profile, file)
+    console.log(
+      msg().configLineProfile(profile, config.allowed.join(', '), sourceLabel(file, profile)),
+    )
   }
 }
 
