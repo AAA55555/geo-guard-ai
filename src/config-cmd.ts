@@ -12,6 +12,7 @@ import {
   isProfileName,
   loadConfig,
   removeProfile,
+  resetConfig,
   validatedAllowed,
   writeConfig,
   PROFILE_NAMES,
@@ -22,12 +23,15 @@ import { msg } from './i18n'
 export type ConfigOptions = Readonly<{
   countries: string | null
   profile: ProfileName | null
+  reset: boolean
+  /** `--unset` is `--reset --profile <name>`; tracked apart only to keep its own wording. */
   unset: boolean
 }>
 
 export function parseConfigArgs(argv: string[]): ConfigOptions {
   let countries: string | null = null
   let profile: ProfileName | null = null
+  let reset = false
   let unset = false
 
   const takeProfile = (raw: string | null): ProfileName => {
@@ -57,14 +61,17 @@ export function parseConfigArgs(argv: string[]): ConfigOptions {
       profile = takeProfile(valueFor('--profile'))
     } else if (arg.startsWith('--profile=')) {
       profile = takeProfile(arg.slice('--profile='.length))
+    } else if (arg === '--reset') {
+      reset = true
     } else if (arg === '--unset') {
       unset = true
+      reset = true
     } else {
       throw new Error(msg().unknownConfigArg(arg))
     }
   }
 
-  return { countries, profile, unset }
+  return { countries, profile, reset, unset }
 }
 
 /** Prints the effective config: the shared policy and what each tool ends up with. */
@@ -82,24 +89,43 @@ function showConfig(): void {
   }
 }
 
-export async function runConfig(argv: string[] = []): Promise<void> {
-  const opts = parseConfigArgs(argv)
+/** One operation, two spellings: the error has to name the flag the user typed. */
+function withCountriesError(unset: boolean): string {
+  if (unset) return msg().configUnsetWithCountries()
+  return msg().configResetWithCountries()
+}
 
-  if (opts.unset) {
-    if (!opts.profile) {
-      throw new Error(msg().configUnsetNeedsProfile(PROFILE_NAMES.join(', ')))
-    }
-    if (opts.countries !== null) {
-      throw new Error(msg().configUnsetWithCountries())
-    }
+/** `--reset`, and its profile-scoped spelling `--unset --profile <name>`. */
+function runReset(opts: ConfigOptions): void {
+  // --unset is meaningless without a profile; --reset without one is the full reset.
+  if (opts.unset && !opts.profile) {
+    throw new Error(msg().configUnsetNeedsProfile(PROFILE_NAMES.join(', ')))
+  }
+  if (opts.countries !== null) {
+    throw new Error(withCountriesError(opts.unset))
+  }
+
+  if (opts.profile) {
     const { removed } = removeProfile(opts.profile)
     if (removed) {
       console.log(msg().configProfileUnset(opts.profile))
     } else {
       console.log(msg().configProfileNotSet(opts.profile))
     }
-    console.log('')
-    showConfig()
+  } else {
+    const { file } = resetConfig()
+    console.log(msg().configResetDone(file))
+  }
+
+  console.log('')
+  showConfig()
+}
+
+export async function runConfig(argv: string[] = []): Promise<void> {
+  const opts = parseConfigArgs(argv)
+
+  if (opts.reset) {
+    runReset(opts)
     return
   }
 

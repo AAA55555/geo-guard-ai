@@ -253,6 +253,25 @@ export function writeConfig(
   return { file, config: effectiveFromFile(next, profile) }
 }
 
+/**
+ * Rewrites config.json exactly as a fresh install leaves it: the defaults and
+ * no profiles at all. Unlike writeConfig this does not merge — a reset that
+ * kept your old timeoutMs would not be a reset.
+ */
+export function resetConfig(): { file: string; config: GeoGuardConfig } {
+  fs.mkdirSync(configDir(), { recursive: true })
+
+  const next: GeoGuardConfigFile = {
+    allowed: [...DEFAULT_CONFIG.allowed],
+    timeoutMs: DEFAULT_CONFIG.timeoutMs,
+    providers: [...DEFAULT_CONFIG.providers],
+  }
+
+  const file = configPath()
+  fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`)
+  return { file, config: effectiveFromFile(next) }
+}
+
 /** Removes a profile section. Returns false if there was nothing to remove. */
 export function removeProfile(profile: ProfileName): { file: string; removed: boolean } {
   const file = configPath()

@@ -98,6 +98,15 @@ This touches **only** `config.json` — your rc file and both hook configs are l
 
 For a one-off check without writing the config: `GEO_GUARD_ALLOWED=NL geo-guard check`.
 
+### Back to defaults
+
+```bash
+geo-guard config --reset                  # whole config, profiles included
+geo-guard config --reset --profile cursor # one profile only (same as --unset)
+```
+
+`--reset` leaves `config.json` exactly as a fresh install would: `allowed: ["NL"]`, the default `timeoutMs` and `providers`, and no `profiles`. It does **not** reinstall or remove anything — the hook configs, the alias and the rc file are untouched, so unlike `uninstall` the guard keeps working, just on the default policy.
+
 ## Alias and collisions
 
 The point of installing is to route the familiar `claude` command through the check. To do that, a marker-delimited block is written to your rc:
@@ -226,6 +235,8 @@ geo-guard --help
 | `-c, --countries ES,PT` | set the allowed countries |
 | `-p, --profile claude\|cursor` | apply to that tool only |
 | `--unset --profile cursor` | drop the profile; that tool goes back to the shared list |
+| `--reset` | everything back to the defaults, every profile dropped |
+| `--reset --profile cursor` | same as `--unset --profile cursor` |
 
 ## Config
 
