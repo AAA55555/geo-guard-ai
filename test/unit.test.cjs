@@ -1,6 +1,6 @@
 'use strict'
 
-const { test, describe, before, after } = require('node:test')
+const { test, describe, before, after, beforeEach, afterEach } = require('node:test')
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
@@ -15,7 +15,6 @@ const {
   removeProfile,
   loadStrictestConfig,
   profilesConfigured,
-  hasProfileSection,
   isProfileName,
   PROFILE_NAMES,
   DEFAULT_CONFIG,
@@ -175,7 +174,6 @@ describe('profiles', () => {
     // просят профиль, а его нет — молча берётся общий уровень
     assert.deepEqual(loadConfig('cursor').allowed, ['NL'])
     assert.deepEqual(loadConfig('claude').allowed, ['NL'])
-    assert.equal(hasProfileSection('cursor'), false)
   })
 
   test('profile overrides only its own tool, shared level untouched', () => {
@@ -187,8 +185,6 @@ describe('profiles', () => {
     assert.deepEqual(loadConfig('claude').allowed, ['NL', 'DE'])
     assert.deepEqual(loadConfig('cursor').allowed, ['PL'])
     assert.equal(profilesConfigured(), true)
-    assert.equal(hasProfileSection('cursor'), true)
-    assert.equal(hasProfileSection('claude'), false)
 
     const raw = readFile()
     assert.deepEqual(raw.allowed, ['NL', 'DE'])
@@ -1372,7 +1368,7 @@ describe('geo-guard config command', () => {
     assert.deepEqual(readCfg().profiles.cursor.allowed, ['PL'])
 
     const shown = run([])
-    assert.match(shown.stdout, /shared\s+allowed: NL, DE/)
+    assert.match(shown.stdout, /shared\s+allowed: NL, DE \(from the file\)/)
     assert.match(shown.stdout, /cursor\s+allowed: PL\s+\(own profile\)/)
     assert.match(shown.stdout, /claude\s+allowed: NL, DE\s+\(inherited\)/)
 
@@ -1421,7 +1417,7 @@ describe('geo-guard config command', () => {
     const r = run(['--reset'])
     assert.equal(r.status, 0)
     assert.match(r.stdout, /back to defaults/)
-    assert.match(r.stdout, /shared\s+allowed: NL\s+timeout: 5s/)
+    assert.match(r.stdout, /shared\s+allowed: NL \(from the file\)\s+timeout: 5s/)
 
     const cfg = readCfg()
     assert.deepEqual(cfg.allowed, ['NL'])
@@ -1739,5 +1735,368 @@ describe('installAlias with a broken END marker', () => {
 
     assert.equal(res.preserved, 'foreign')
     assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
+  })
+})
+
+describe('malformed hook files', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let home
+  let cfgDir
+
+  beforeEach(() => {
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-malformed-'))
+    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-malformed-cfg-'))
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true })
+  })
+  afterEach(() => {
+    fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(cfgDir, { recursive: true, force: true })
+  })
+
+  function setup(extra = []) {
+    return spawnSync(
+      process.execPath,
+      [cli, 'setup', '--yes', '--countries', 'RU', '--no-alias', '--no-cursor', ...extra],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          GEO_GUARD_RC: path.join(home, '.zshrc'),
+          GEO_GUARD_SHELL: 'zsh',
+          GEO_GUARD_CONFIG_DIR: cfgDir,
+          GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+          GEO_GUARD_LANG: 'en',
+        },
+        encoding: 'utf8',
+      },
+    )
+  }
+
+  const writeSettings = raw => fs.writeFileSync(path.join(home, '.claude', 'settings.json'), raw)
+  const configWritten = () => fs.existsSync(path.join(cfgDir, 'config.json'))
+
+  test('a hook section of the wrong shape is refused before anything is written', () => {
+    writeSettings('{"hooks":{"UserPromptSubmit":"oops"}}')
+
+    const r = setup()
+
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /not the shape/i)
+    assert.doesNotMatch(r.stderr, /TypeError|is not a function/)
+    // главное: setup не оставил машину с конфигом, но без хука
+    assert.equal(configWritten(), false)
+  })
+
+  test('hooks itself not being an object is refused too', () => {
+    writeSettings('{"hooks":42}')
+
+    const r = setup()
+
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /not the shape/i)
+    assert.equal(configWritten(), false)
+  })
+
+  test('invalid JSON is still refused before writing', () => {
+    writeSettings('{ oops')
+
+    const r = setup()
+
+    assert.notEqual(r.status, 0)
+    assert.equal(configWritten(), false)
+  })
+
+  test('garbage entries inside a valid array are stepped over, not crashed on', () => {
+    writeSettings('{"hooks":{"UserPromptSubmit":[null]}}')
+
+    const r = setup()
+
+    assert.equal(r.status, 0)
+    const after = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
+    // чужой мусор на месте, наша запись добавлена рядом
+    assert.equal(after.hooks.UserPromptSubmit[0], null)
+    const ours = after.hooks.UserPromptSubmit.filter(
+      m => m && (m.hooks || []).some(h => h.command === 'geo-guard check'),
+    )
+    assert.equal(ours.length, 1)
+  })
+
+  test('uninstall survives the same garbage and leaves it alone', () => {
+    writeSettings('{"hooks":{"UserPromptSubmit":[null]}}')
+    assert.equal(setup().status, 0)
+
+    const r = spawnSync(process.execPath, [cli, 'uninstall', '--keep-config'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: path.join(home, '.zshrc'),
+        GEO_GUARD_CONFIG_DIR: cfgDir,
+        GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(r.status, 0)
+    const after = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
+    assert.deepEqual(after.hooks.UserPromptSubmit, [null])
+  })
+
+  test('a root that is not an object is refused, in both hook files', () => {
+    // Раньше проверялся только .hooks: у массива/числа его нет, assert пропускал,
+    // а JSON.stringify массива терял добавленное — setup рапортовал об успехе,
+    // хука при этом не было вовсе.
+    for (const raw of ['[1,2]', '42', '"hi"', 'null']) {
+      writeSettings(raw)
+
+      const r = setup()
+
+      assert.notEqual(r.status, 0, `expected failure for ${raw}`)
+      assert.match(r.stderr, /does not hold a JSON object/i)
+      assert.doesNotMatch(r.stderr, /TypeError|Cannot create property|Cannot read properties/)
+      assert.equal(configWritten(), false)
+      assert.equal(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'), raw)
+    }
+  })
+
+  test('a cursor hooks.json with a non-object root is refused as well', () => {
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
+    const file = path.join(home, '.cursor', 'hooks.json')
+    fs.writeFileSync(file, '[1,2]')
+
+    const r = setup(['--cursor'])
+
+    assert.notEqual(r.status, 0)
+    assert.equal(fs.readFileSync(file, 'utf8'), '[1,2]')
+    assert.equal(configWritten(), false)
+  })
+
+  test('uninstall leaves matchers it does not recognize, and ones holding nothing of ours', () => {
+    writeSettings(
+      JSON.stringify({
+        tools: { keepme: 1 },
+        hooks: {
+          UserPromptSubmit: [
+            { matcher: '*', hooks: 'oops' },
+            { matcher: 'keepme' },
+            { hooks: [{ type: 'command', command: 'geo-guard check' }] },
+          ],
+        },
+      }),
+    )
+
+    const r = spawnSync(process.execPath, [cli, 'uninstall', '--keep-config'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: path.join(home, '.zshrc'),
+        GEO_GUARD_CONFIG_DIR: cfgDir,
+        GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(r.status, 0)
+    const after = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
+    // наша запись снята, обе чужие на месте, посторонняя секция цела
+    assert.deepEqual(after.tools, { keepme: 1 })
+    assert.deepEqual(after.hooks.UserPromptSubmit, [
+      { matcher: '*', hooks: 'oops' },
+      { matcher: 'keepme' },
+    ])
+  })
+
+  test('install does not drop a foreign matcher that has no hooks key', () => {
+    writeSettings(JSON.stringify({ hooks: { UserPromptSubmit: [{ matcher: 'Bash' }] } }))
+
+    assert.equal(setup().status, 0)
+
+    const after = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8'))
+    assert.ok(after.hooks.UserPromptSubmit.some(m => m.matcher === 'Bash'))
+  })
+
+  test('an empty hook list we never put anything into is left alone', () => {
+    // Пустой UserPromptSubmit создали не мы — удалять его (и делать .bak)
+    // означало бы править файл, из которого мы ничего не вынимали.
+    const settingsFile = path.join(home, '.claude', 'settings.json')
+    const cursorFile = path.join(home, '.cursor', 'hooks.json')
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
+    const claudeRaw = '{"other":1,"hooks":{"UserPromptSubmit":[]}}'
+    const cursorRaw = '{"version":1,"hooks":{"beforeSubmitPrompt":[]}}'
+    fs.writeFileSync(settingsFile, claudeRaw)
+    fs.writeFileSync(cursorFile, cursorRaw)
+
+    const r = spawnSync(process.execPath, [cli, 'uninstall', '--keep-config'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: path.join(home, '.zshrc'),
+        GEO_GUARD_CONFIG_DIR: cfgDir,
+        GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(r.status, 0)
+    assert.equal(fs.readFileSync(settingsFile, 'utf8'), claudeRaw)
+    assert.equal(fs.readFileSync(cursorFile, 'utf8'), cursorRaw)
+    assert.equal(fs.existsSync(`${settingsFile}.bak`), false)
+    assert.equal(fs.existsSync(`${cursorFile}.bak`), false)
+  })
+
+  test('a malformed cursor hooks.json is refused before writing too', () => {
+    fs.mkdirSync(path.join(home, '.cursor'), { recursive: true })
+    fs.writeFileSync(
+      path.join(home, '.cursor', 'hooks.json'),
+      '{"hooks":{"beforeSubmitPrompt":"oops"}}',
+    )
+
+    const r = spawnSync(
+      process.execPath,
+      [cli, 'setup', '--yes', '--countries', 'RU', '--no-alias', '--cursor'],
+      {
+        env: {
+          ...process.env,
+          HOME: home,
+          USERPROFILE: home,
+          GEO_GUARD_RC: path.join(home, '.zshrc'),
+          GEO_GUARD_SHELL: 'zsh',
+          GEO_GUARD_CONFIG_DIR: cfgDir,
+          GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+          GEO_GUARD_LANG: 'en',
+        },
+        encoding: 'utf8',
+      },
+    )
+
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr, /not the shape/i)
+    assert.equal(configWritten(), false)
+    // и хук Claude Code тоже не поставлен — упали до первой записи
+    assert.equal(fs.existsSync(path.join(home, '.claude', 'settings.json')), false)
+  })
+})
+
+describe('config: env override, reset spellings, nested config path', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let tmpDir
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-cfg2-'))
+  })
+  afterEach(() => fs.rmSync(tmpDir, { recursive: true, force: true }))
+
+  function run(args, extraEnv = {}, file = path.join(tmpDir, 'config.json')) {
+    return spawnSync(process.execPath, [cli, 'config', ...args], {
+      env: {
+        ...process.env,
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: file,
+        GEO_GUARD_LANG: 'en',
+        GEO_GUARD_ALLOWED: undefined,
+        GEO_GUARD_ALLOWED_CURSOR: undefined,
+        ...extraEnv,
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  test('an env override is labelled as such instead of "inherited"', () => {
+    run(['--countries', 'NL'])
+
+    const r = run([], { GEO_GUARD_ALLOWED: 'RU', GEO_GUARD_ALLOWED_CURSOR: 'CN' })
+
+    assert.equal(r.status, 0)
+    assert.match(r.stdout, /shared\s+allowed: RU \(overridden by GEO_GUARD_ALLOWED\)/)
+    assert.match(r.stdout, /cursor\s+allowed: CN\s+\(overridden by GEO_GUARD_ALLOWED_CURSOR\)/)
+    assert.doesNotMatch(r.stdout, /RU\s+\(inherited\)/)
+    // env не должен попадать в файл
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8')).allowed, [
+      'NL',
+    ])
+  })
+
+  test('the shared line does not claim to inherit from anywhere', () => {
+    run(['--countries', 'NL'])
+    assert.match(run([]).stdout, /shared\s+allowed: NL \(from the file\)/)
+  })
+
+  test('--reset --unset without a profile is a full reset, --unset alone still errors', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.json'),
+      JSON.stringify({ allowed: ['ES'], profiles: { cursor: { allowed: ['PL'] } } }),
+    )
+
+    const both = run(['--reset', '--unset'])
+    assert.equal(both.status, 0)
+    const cfg = JSON.parse(fs.readFileSync(path.join(tmpDir, 'config.json'), 'utf8'))
+    assert.deepEqual(cfg.allowed, ['NL'])
+    assert.equal(cfg.profiles, undefined)
+
+    const alone = run(['--unset'])
+    assert.notEqual(alone.status, 0)
+    assert.match(alone.stderr, /--unset needs a profile/)
+  })
+
+  test('a profile with no allowed of its own is not reported as "own profile"', () => {
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.json'),
+      JSON.stringify({ allowed: ['NL', 'DE'], profiles: { cursor: { timeoutMs: 9000 } } }),
+    )
+
+    const r = run([])
+
+    assert.match(r.stdout, /cursor\s+allowed: NL, DE\s+\(inherited\)/)
+    assert.doesNotMatch(r.stdout, /cursor.*own profile/)
+  })
+
+  test('a JSON null falls through to the default, and the label says so', () => {
+    // loadConfig разрешает это через `??`, для которого null прозрачен;
+    // метка обязана говорить то же самое, а не «из файла» / «свой профиль».
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.json'),
+      JSON.stringify({ allowed: null, profiles: { cursor: { allowed: null } } }),
+    )
+
+    const r = run([])
+
+    assert.match(r.stdout, /shared\s+allowed: NL \(built-in default\)/)
+    assert.match(r.stdout, /cursor\s+allowed: NL\s+\(built-in default\)/)
+    assert.doesNotMatch(r.stdout, /own profile|from the file/)
+  })
+
+  test('with no config file at all the values are labelled as built-in defaults', () => {
+    const r = run([], {}, path.join(tmpDir, 'missing.json'))
+    assert.match(r.stdout, /shared\s+allowed: NL \(built-in default\)/)
+  })
+
+  test('a config path in a directory that does not exist yet is created', () => {
+    const nested = path.join(tmpDir, 'nope', 'deeper', 'config.json')
+
+    const r = run(['--countries', 'NL'], {}, nested)
+
+    assert.equal(r.status, 0)
+    assert.deepEqual(JSON.parse(fs.readFileSync(nested, 'utf8')).allowed, ['NL'])
+  })
+})
+
+describe('unknown top-level option', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+
+  test('a leading dash is an option, not a binary to run', () => {
+    const r = spawnSync(process.execPath, [cli, '--porfile'], {
+      env: { ...process.env, GEO_GUARD_LANG: 'en' },
+      encoding: 'utf8',
+    })
+    assert.equal(r.status, 1)
+    assert.match(r.stderr, /Unknown option/)
+    // не должен уйти искать бинарь с таким именем
+    assert.doesNotMatch(r.stderr + r.stdout, /not found in PATH/)
   })
 })

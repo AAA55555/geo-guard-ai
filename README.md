@@ -300,10 +300,12 @@ geo-guard config --unset --profile cursor          # back to the shared list
 
 ```
 Config: ~/.config/geo-guard-ai/config.json
-  shared   allowed: NL, DE   timeout: 5s
+  shared   allowed: NL, DE   timeout: 5s   (from the file)
   claude   allowed: NL, DE   (inherited)
   cursor   allowed: PL   (own profile)
 ```
+
+The label says where each list actually comes from, so an env var in your shell doesn't read as a file setting: with `GEO_GUARD_ALLOWED_CURSOR=CN` set, the cursor line says `(overridden by GEO_GUARD_ALLOWED_CURSOR)`. Env never changes what is written to the file.
 
 `setup` can do it too, at install time: `geo-guard setup --countries NL,DE --cursor-countries PL`, or by answering *"Use a different country list for Cursor?"* in the interactive flow.
 
@@ -346,6 +348,8 @@ npm uninstall -g geo-guard-ai     # remove the package itself
 - `config.json` and the empty config directory.
 
 If the `geo-guard` binary itself is gone (see [Cursor](#cursor) → `failClosed`), `geo-guard uninstall` can't run — remove the hook entries from both files by hand instead.
+
+`setup` checks everything that could refuse the install **before** it writes anything: if `~/.claude/settings.json` or `~/.cursor/hooks.json` is not valid JSON, or its hook section is not the shape those tools write (say `"UserPromptSubmit"` holding a string), you get a message naming the file and the key, and nothing is changed at all. geo-guard will not rewrite data it doesn't recognize, and it will not leave you with a config but no hook. Entries it doesn't understand *inside* an otherwise valid list are stepped over and left in place.
 
 Safety on uninstall:
 

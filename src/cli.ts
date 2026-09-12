@@ -59,6 +59,13 @@ async function main(): Promise<void> {
     }
   }
 
+  // A leading dash is never a program name: treat it as a mistyped option
+  // rather than going off to look for a binary called '--porfile'.
+  if (head.startsWith('-')) {
+    console.error(`✖ ${msg().unknownOption(head)}`)
+    process.exit(1)
+  }
+
   // selfEntry = published bin shim (not dist/cli.js), so resolve skips geo-guard correctly
   const selfEntry = path.join(__dirname, '..', 'bin', 'geo-guard.js')
   await runWrap(head, argv.slice(1), { selfEntry })

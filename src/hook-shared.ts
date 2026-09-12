@@ -5,6 +5,14 @@
  * that recognizes our own hook entries in either file.
  */
 
+/**
+ * A value we can safely walk as an object. Both hook files are JSON someone
+ * else owns, so every access into them goes through this first.
+ */
+export function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
 export function hookCommand(): string {
   return 'geo-guard check'
 }

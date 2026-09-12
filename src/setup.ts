@@ -10,8 +10,8 @@ import {
   configPath,
   type ProfileName,
 } from './config'
-import { installClaudeHook } from './claude-hook'
-import { installCursorHook } from './cursor-hook'
+import { assertClaudeHooksInstallable, installClaudeHook } from './claude-hook'
+import { assertCursorHooksInstallable, installCursorHook } from './cursor-hook'
 import {
   aliasConflictFor,
   detectShell,
@@ -279,6 +279,13 @@ export async function runSetup(argv: string[] = []): Promise<void> {
       }
     }
   }
+
+  // Everything that can refuse the install is checked before the first write.
+  // setup has no rollback, so failing halfway leaves a machine with a config but
+  // no hook — and the usual reason to fail is a malformed hook file, which we
+  // can see up front.
+  if (wantHook) assertClaudeHooksInstallable()
+  if (wantCursor) assertCursorHooksInstallable()
 
   // Validate every list before writing anything: a typo in --cursor-countries
   // must not leave the shared list already rewritten.

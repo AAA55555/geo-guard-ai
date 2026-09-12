@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 
 import { msg } from './i18n'
-import { hookCommand, isOurHook } from './hook-shared'
+import { hookCommand, isOurHook, isPlainObject } from './hook-shared'
 
 type CursorHook = {
   type?: string
@@ -29,6 +29,30 @@ type CursorHooksFile = {
     [key: string]: unknown
   }
   [key: string]: unknown
+}
+
+/**
+ * Refuses to work on a hooks.json whose hook section is not the shape Cursor
+ * writes — same reasoning as the Claude Code side: a clear error beats a
+ * TypeError thrown after setup has already written half its changes.
+ */
+export function assertCursorHooksInstallable(): void {
+  const { file, data } = readHooksFile()
+
+  // See the Claude Code side: an array or a primitive at the root would let the
+  // install "succeed" while writing nothing at all.
+  if (!isPlainObject(data)) {
+    throw new Error(msg().invalidHookRoot(file))
+  }
+  if (data.hooks === undefined) return
+
+  if (!isPlainObject(data.hooks)) {
+    throw new Error(msg().invalidHookShape(file, 'hooks'))
+  }
+  const list = data.hooks.beforeSubmitPrompt
+  if (list !== undefined && !Array.isArray(list)) {
+    throw new Error(msg().invalidHookShape(file, 'hooks.beforeSubmitPrompt'))
+  }
 }
 
 export function cursorHooksPath(): string {
@@ -69,8 +93,12 @@ function stripOurHooks(data: CursorHooksFile): CursorHooksFile {
   const hooks = data.hooks
   if (!hooks) return data
 
-  hooks.beforeSubmitPrompt = list.filter(hook => !isOurHook(hook))
-  if (hooks.beforeSubmitPrompt.length === 0) {
+  const next = list.filter(hook => !(isPlainObject(hook) && isOurHook(hook)))
+  // Nothing of ours in there — then it is not ours to rewrite or tidy up.
+  if (next.length === list.length) return data
+
+  hooks.beforeSubmitPrompt = next
+  if (next.length === 0) {
     delete hooks.beforeSubmitPrompt
   }
   if (Object.keys(hooks).length === 0) {
@@ -80,6 +108,7 @@ function stripOurHooks(data: CursorHooksFile): CursorHooksFile {
 }
 
 export function installCursorHook(): { file: string; command: string; kept: boolean } {
+  assertCursorHooksInstallable()
   const { file, data } = readHooksFile()
 
   // Update our entry in place — the user may have raised the timeout or turned
@@ -90,7 +119,7 @@ export function installCursorHook(): { file: string; command: string; kept: bool
   if (Array.isArray(list) && data.hooks) {
     const next: CursorHook[] = []
     for (const hook of list) {
-      if (!isOurHook(hook)) {
+      if (!isPlainObject(hook) || !isOurHook(hook)) {
         next.push(hook)
         continue
       }
@@ -100,7 +129,9 @@ export function installCursorHook(): { file: string; command: string; kept: bool
       kept = JSON.stringify(updated) !== JSON.stringify(defaultHook())
       next.push(updated)
     }
-    data.hooks.beforeSubmitPrompt = next
+    // Same discipline as the Claude Code side: a list holding nothing of ours
+    // is left as the object it already was, not rebuilt into an equal one.
+    if (found) data.hooks.beforeSubmitPrompt = next
   }
 
   data.version ??= 1
@@ -120,6 +151,8 @@ export function uninstallCursorHook(): { file: string; changed: boolean } {
   if (!fs.existsSync(file)) return { file, changed: false }
 
   const { data } = readHooksFile()
+  if (!isPlainObject(data)) return { file, changed: false }
+
   const before = JSON.stringify(data)
   stripOurHooks(data)
   const after = JSON.stringify(data)
