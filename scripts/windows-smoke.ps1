@@ -312,7 +312,12 @@ echo GEOGUARD_SMOKE_RAN
     # hook is genuinely absent. What matters here is that the two things that
     # ARE installed are found — on win32 paths, through the PowerShell profile.
     Assert-Exit $r 1 'status must exit 1 while the Cursor hook is deliberately absent'
-    Assert-Contains $r.StdOut 'function claude' 'status did not report the PowerShell alias it should have found'
+    # The profile path is the win32-specific part: status has to look in
+    # Documents\PowerShell, not at a POSIX rc. The alias line itself is
+    # normalized ("alias 'claude' -> geo-guard claude"), so the raw
+    # `function claude { ... }` body never appears in the report.
+    Assert-Contains $r.StdOut 'Microsoft.PowerShell_profile.ps1' 'status did not look at the PowerShell profile'
+    Assert-Contains $r.StdOut "alias 'claude'" 'status did not report the alias it should have found'
     Assert-Contains $r.StdOut 'our hook entry is in place' 'status did not find the Claude Code hook it installed'
     $after = Get-TreeSnapshot $sandbox
     if ($before -ne $after) {
@@ -335,7 +340,7 @@ echo GEOGUARD_SMOKE_RAN
 
     $r = Invoke-Geo @('status')
     Assert-Exit $r 1 'status must exit 1 once uninstall has removed everything'
-    Assert-NotContains $r.StdOut 'function claude' 'status still reports an alias after uninstall removed it'
+    Assert-Contains $r.StdOut 'no geo-guard alias block' 'status still reports an alias after uninstall removed it'
 
     Write-Host 'windows-smoke: OK (powershell profile, %APPDATA% config, PATHEXT + .cmd spawn, check exit codes, stdin payload -> profile, status, uninstall)'
 } catch {
