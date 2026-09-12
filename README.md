@@ -349,6 +349,8 @@ Priority, highest first:
 4. the top level of `config.json`
 5. built-in defaults
 
+**Which profile a launch uses.** `geo-guard <command>` picks it from the command name: `claude` runs under the `claude` profile, `cursor` and `cursor-agent` under `cursor`. Anything else — `geo-guard echo hi` — runs under the shared policy, since it belongs to no tool. So with `cursor: ["PL"]` configured, `cursor-agent` is blocked at launch on the Cursor list while `claude` starts on its own, in the same shell, in the same second.
+
 **How the hook knows which tool is asking.** It can't be a flag in the command: Cursor imports Claude Code's hooks and drops the ones whose command string matches its own byte for byte — that exact match is what keeps the check running once per prompt instead of twice (see [Cursor](#cursor)). So both config files keep the identical `geo-guard check`, and the profile is worked out at run time from the JSON the host pipes to stdin: Claude Code sends `hook_event_name: "UserPromptSubmit"`, Cursor `"beforeSubmitPrompt"`. That's the real host, whichever file the entry came from.
 
 If nothing is piped in at all — you ran `geo-guard check` yourself in a terminal — the **shared** policy applies, the same behaviour as before profiles existed. If a host did pipe something in but it can't be identified (garbage, or a future event name we don't know), the **strictest** policy applies instead: only countries that the shared list and every configured profile allow. Guessing one tool's policy for another is the one thing worth failing closed over.
