@@ -86,6 +86,53 @@ function Invoke-Geo {
     [pscustomobject]@{ ExitCode = $proc.ExitCode; StdOut = $out; StdErr = $err }
 }
 
+# Start-Process cannot feed stdin, and the payload path is the whole point of
+# this step, so the CLI is driven through Node's own child_process instead.
+function Invoke-GeoWithStdin {
+    param([string[]]$GeoArgs, [string]$StdinText)
+    $runner = Join-Path $sandbox 'run-with-stdin.cjs'
+    $payloadFile = Join-Path $sandbox 'payload.json'
+    Set-Content -Path $payloadFile -Encoding ASCII -NoNewline -Value $StdinText
+    $script = @'
+const { spawnSync } = require('node:child_process')
+const fs = require('node:fs')
+const [cli, payloadFile, ...rest] = process.argv.slice(2)
+const r = spawnSync(process.execPath, [cli, ...rest], {
+  input: fs.readFileSync(payloadFile),
+  encoding: 'utf8',
+})
+fs.writeFileSync(process.env.GGSMOKE_OUT, r.stdout ?? '')
+fs.writeFileSync(process.env.GGSMOKE_ERR, r.stderr ?? '')
+process.exit(r.status ?? 1)
+'@
+    Set-Content -Path $runner -Encoding ASCII -Value $script
+    $outFile = Join-Path $sandbox 'last-stdout.txt'
+    $errFile = Join-Path $sandbox 'last-stderr.txt'
+    Set-Env 'GGSMOKE_OUT' $outFile
+    Set-Env 'GGSMOKE_ERR' $errFile
+    $argList = @(@($runner, $cli, $payloadFile) + $GeoArgs)
+    $proc = Start-Process -FilePath $node -ArgumentList $argList -NoNewWindow -Wait -PassThru
+    Set-Env 'GGSMOKE_OUT' $null
+    Set-Env 'GGSMOKE_ERR' $null
+    $out = ''
+    $err = ''
+    if (Test-Path $outFile) { $out = [string](Get-Content -Raw -Path $outFile) }
+    if (Test-Path $errFile) { $err = [string](Get-Content -Raw -Path $errFile) }
+    [pscustomobject]@{ ExitCode = $proc.ExitCode; StdOut = $out; StdErr = $err }
+}
+
+# Names, sizes and contents of everything in the sandbox — for asserting that a
+# command changed nothing. The helper's own scratch files are excluded.
+function Get-TreeSnapshot {
+    param([string]$Root)
+    $skip = @('last-stdout.txt', 'last-stderr.txt', 'payload.json', 'run-with-stdin.cjs')
+    $lines = Get-ChildItem -Path $Root -Recurse -Force -File |
+        Where-Object { $skip -notcontains $_.Name } |
+        Sort-Object FullName |
+        ForEach-Object { "$($_.FullName)|$($_.Length)|" + [System.IO.File]::ReadAllText($_.FullName) }
+    return ($lines -join "`n")
+}
+
 function Assert-Exit {
     param($Result, [int]$Expected, [string]$What)
     if ($Result.ExitCode -ne $Expected) {
@@ -233,6 +280,45 @@ echo GEOGUARD_SMOKE_RAN
     # itself, so a looser check would pass even if the profile were ignored.
     Assert-Contains $r.StdErr "the 'claude' policy" 'the block message must name the profile it applied'
 
+    # --- 4d. the profile comes from the payload the host pipes to stdin -------
+    # The only place this is decided on Windows, and the one thing the POSIX
+    # suites cannot tell us anything about: reading stdin. With profiles
+    # configured, `check` reads the JSON the host writes and picks the policy
+    # from hook_event_name. Claude Code allows RU here, Cursor does not.
+    # A config with per-tool profiles, alongside the installed one.
+    $profileConfig = Join-Path $sandbox 'profiles-config.json'
+    Set-Content -Path $profileConfig -Encoding ASCII -Value '{"allowed":["NL"],"profiles":{"claude":{"allowed":["RU"]},"cursor":{"allowed":["NL"]}}}'
+    Set-Env 'GEO_GUARD_CONFIG_FILE' $profileConfig
+    Set-Env 'GEO_GUARD_PROVIDERS' 'https://example.test/fake'
+    Set-Env 'NODE_OPTIONS' "--require $mock"
+
+    $r = Invoke-GeoWithStdin @('check') '{"hook_event_name":"UserPromptSubmit","prompt":"hi"}'
+    Assert-Exit $r 0 'check must pass under the claude profile (payload read from stdin)'
+    if ($r.StdOut -ne '{"continue":true}') {
+        throw "check wrote '$($r.StdOut)' on stdout, expected the exact control JSON"
+    }
+
+    $r = Invoke-GeoWithStdin @('check') '{"hook_event_name":"beforeSubmitPrompt","prompt":"hi"}'
+    Assert-Exit $r 2 'check must block under the cursor profile (payload read from stdin)'
+    Assert-Contains $r.StdErr "the 'cursor' policy" 'the block must name the profile taken from the payload'
+
+    Set-Env 'NODE_OPTIONS' $null
+    Set-Env 'GEO_GUARD_CONFIG_FILE' $configFile
+
+    # --- 4e. status reports what is installed, and writes nothing -------------
+    $before = Get-TreeSnapshot $sandbox
+    $r = Invoke-Geo @('status')
+    # Exit 1, and correctly so: step 1 installed with --no-cursor, so the Cursor
+    # hook is genuinely absent. What matters here is that the two things that
+    # ARE installed are found — on win32 paths, through the PowerShell profile.
+    Assert-Exit $r 1 'status must exit 1 while the Cursor hook is deliberately absent'
+    Assert-Contains $r.StdOut 'function claude' 'status did not report the PowerShell alias it should have found'
+    Assert-Contains $r.StdOut 'our hook entry is in place' 'status did not find the Claude Code hook it installed'
+    $after = Get-TreeSnapshot $sandbox
+    if ($before -ne $after) {
+        throw "status changed the sandbox — it must be read-only`nbefore:`n$before`nafter:`n$after"
+    }
+
     # --- 5. uninstall cleans the PowerShell profile and the %APPDATA% config -
     Set-Env 'GEO_GUARD_CONFIG_FILE' $null
     $r = Invoke-Geo @('uninstall', '--quiet')
@@ -247,7 +333,11 @@ echo GEOGUARD_SMOKE_RAN
         Assert-NotContains ([string](Get-Content -Raw -Path $settings)) 'geo-guard check' 'uninstall left the hook in settings.json'
     }
 
-    Write-Host 'windows-smoke: OK (powershell profile, %APPDATA% config, PATHEXT + .cmd spawn, check exit codes, uninstall)'
+    $r = Invoke-Geo @('status')
+    Assert-Exit $r 1 'status must exit 1 once uninstall has removed everything'
+    Assert-NotContains $r.StdOut 'function claude' 'status still reports an alias after uninstall removed it'
+
+    Write-Host 'windows-smoke: OK (powershell profile, %APPDATA% config, PATHEXT + .cmd spawn, check exit codes, stdin payload -> profile, status, uninstall)'
 } catch {
     $failed = $true
     Write-Host "windows-smoke: FAIL - $($_.Exception.Message)"

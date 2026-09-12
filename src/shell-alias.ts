@@ -288,11 +288,66 @@ export function aliasConflictFor(
 }
 
 /**
+ * What the marker block in an rc file currently holds. One place decides this,
+ * because two of them drifted: `status` used to answer "no block" for a block
+ * whose END marker was missing while `setup` answered "yours, left untouched".
+ */
+export type AliasBlockKind = 'none' | 'pristine' | 'custom' | 'foreign'
+
+export type AliasBlock = Readonly<{
+  kind: AliasBlockKind
+  /** The body as found, trimmed. Empty when there is no block. */
+  body: string
+  /** BEGIN is there but END is not, so where the block ends is unknown. */
+  broken: boolean
+  /** The alias name, when the body parses as ours. */
+  name: string | null
+}>
+
+const NO_BLOCK: AliasBlock = Object.freeze({
+  kind: 'none',
+  body: '',
+  broken: false,
+  name: null,
+})
+
+function classify(body: string, broken: boolean): AliasBlock {
+  if (isPristineAliasBody(body)) {
+    return { kind: 'pristine', body, broken, name: parseAliasBody(body)?.name ?? null }
+  }
+  const parsed = parseAliasBody(body)
+  if (parsed) return { kind: 'custom', body, broken, name: parsed.name }
+  return { kind: 'foreign', body, broken, name: null }
+}
+
+export function readAliasBlock(content: string): AliasBlock {
+  const begin = content.indexOf(BEGIN_MARKER)
+  if (begin === -1) return NO_BLOCK
+
+  const end = content.indexOf(END_MARKER, begin)
+  if (end !== -1) {
+    return classify(content.slice(begin + BEGIN_MARKER.length, end).trim(), false)
+  }
+
+  // Broken block: we know where it starts, not where it ends. Judge it by its
+  // first line — that is as much as we can honestly attribute to the block.
+  const firstLine = content
+    .slice(begin + BEGIN_MARKER.length)
+    .split('\n')
+    .map(line => line.trim())
+    .find(line => line !== '')
+  if (firstLine === undefined) return { ...NO_BLOCK, broken: true }
+  return classify(firstLine, true)
+}
+
+/**
  * The existing block we must not touch, or null when it's ours to regenerate.
  *
- * A block whose END marker someone deleted counts as foreign: we cannot tell
- * where it stops, and repairing it would append a second `alias claude=…` below
- * the user's own line — which in zsh/bash wins, silently dropping their flags.
+ * A block whose END marker someone deleted is only repairable when its body is
+ * one we generated: stripUnmanagedOurAlias knows how to remove exactly that
+ * line. Anything else stays put — repairing it would append a second
+ * `alias claude=…` below the user's own, which in zsh/bash wins, silently
+ * dropping their flags.
  */
 function preservedBlock(
   content: string,
@@ -300,26 +355,9 @@ function preservedBlock(
 ): { kind: PreservedAliasKind; body: string } | null {
   if (overwriteCustom) return null
 
-  const begin = content.indexOf(BEGIN_MARKER)
-  if (begin === -1) return null
-
-  const end = content.indexOf(END_MARKER, begin)
-  if (end === -1) {
-    // Broken block: we know where it starts, not where it ends. Repairing is
-    // safe only for a body we generated ourselves — stripUnmanagedOurAlias
-    // knows how to remove exactly that line. Anything else stays put.
-    const firstLine = content
-      .slice(begin + BEGIN_MARKER.length)
-      .split('\n')
-      .map(line => line.trim())
-      .find(line => line !== '')
-    if (firstLine === undefined || isPristineAliasBody(firstLine)) return null
-    return { kind: parseAliasBody(firstLine) ? 'custom' : 'foreign', body: firstLine }
-  }
-
-  const body = content.slice(begin + BEGIN_MARKER.length, end).trim()
-  if (isPristineAliasBody(body)) return null
-  return { kind: parseAliasBody(body) ? 'custom' : 'foreign', body }
+  const block = readAliasBlock(content)
+  if (block.kind === 'none' || block.kind === 'pristine') return null
+  return { kind: block.kind, body: block.body }
 }
 
 /**
