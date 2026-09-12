@@ -397,11 +397,13 @@ Exit code: `0` — everything geo-guard installs is in place, `1` — something 
 geo-guard status >/dev/null || geo-guard setup --yes
 ```
 
+`setup` deliberately keeps its hands off anything you edited, so this loop converges on everything it can fix and stops short of what it cannot: a marker block holding your own content stays reported until you deal with it.
+
 What it checks:
 
 - the config file: whether it exists and what the effective policy is (the same output as `geo-guard config`);
 - both hook files: whether our entry is there, **and** whether the file is in a shape we could install into at all — a `settings.json` full of broken JSON, or a `hooks` key holding a string, shows up as a line of the report instead of a crash;
-- the alias block in your rc file: ours, ours with flags you added (still fine), or foreign content inside our markers (not fine);
+- the alias block in your rc file: ours, ours with flags you added (still fine), foreign content inside our markers (not fine), or a block whose `# <<< geo-guard-ai end <<<` marker has been deleted. That last one is reported as what it is, and says which of the two it is: a block of ours, which `setup` will repair, or one carrying your own content, which `setup` will not touch and you have to fix by hand;
 - the current country and whether your policy allows it. This is the one part that does **not** affect the exit code: a blocked country is `geo-guard check`'s business, not a sign that the install is broken. With no network it says `could not determine` instead of failing.
 
 ## Verify
@@ -424,10 +426,16 @@ npm run test:e2e      # real CLI against a sandboxed $HOME, POSIX only
 npm run test:pack     # npm pack → install the tarball → smoke test
 ```
 
+`npm test` runs `test/*.test.cjs` — split by area (`config`, `alias`, `hooks`, `check`, `setup`, `core`), plus `hook-invariants`, which asserts over a couple of dozen shapes of `settings.json` and `hooks.json` that we never remove an entry that is not ours and never rewrite a file we took nothing out of.
+
+`scripts/windows-smoke.ps1` covers what the two `sh` scripts above cannot: the PowerShell profile branch of the alias, `%APPDATA%` for the config, `PATHEXT` resolution and spawning a `.cmd`, reading the hook payload from stdin, and `status`. It needs Windows, so CI runs it — see below.
+
 Git hooks (Husky):
 
 - **pre-commit** — `npm run typecheck`
 - **pre-push** — `npm run typecheck && npm test && npm run test:e2e && npm run test:pack`
+
+CI runs the full suite on Ubuntu across Node 18.20 / 20 / 22, and on Windows across the `engines` floor and the current release. The Windows job runs the unit suite and `windows-smoke.ps1`; it does not run `test:e2e` or `test:pack`, which skip themselves there — a green that means "nothing was checked" is worse than no job. That job earned its place on its first run, by catching that `spawn` refuses to launch a `.cmd` without a shell (CVE-2024-27980, in the very Node versions `engines` names) — which meant `geo-guard claude` could not start Claude Code on Windows at all, since npm installs global CLIs as `.cmd` shims.
 
 ### Manual pre-release checklist
 
