@@ -76,6 +76,7 @@ export type Messages = {
   aliasKeptCustom: (file: string) => string
   aliasKeptForeign: (file: string) => string
   aliasForceHint: () => string
+  aliasFixByHand: () => string
   aliasNameChangeSkipped: (kept: string, requested: string) => string
   hookCustomKept: () => string
   aliasNameTaken: (requested: string, used: string) => string
@@ -260,6 +261,8 @@ Examples:
   aliasKeptCustom: file => `⏭  alias in ${file} has your own flags — left untouched:`,
   aliasKeptForeign: file => `⚠️  the geo-guard block in ${file} holds foreign content — left untouched:`,
   aliasForceHint: () => '   Overwrite with the default alias: geo-guard setup --force-alias',
+  aliasFixByHand: () =>
+    '   Not ours to remove — take what you need out of the block by hand, then run setup again.',
   aliasNameChangeSkipped: (kept, requested) =>
     `   Kept the existing name '${kept}', did not switch to '${requested}' — use --force-alias to rename.`,
   hookCustomKept: () => '   your own hook settings (timeout etc.) were kept',
@@ -460,6 +463,8 @@ uninstall options:
   aliasKeptCustom: file => `⏭  в ${file} alias с твоими флагами — не трогаем:`,
   aliasKeptForeign: file => `⚠️  в ${file} внутри наших маркеров чужое содержимое — не трогаем:`,
   aliasForceHint: () => '   Перезаписать дефолтным alias: geo-guard setup --force-alias',
+  aliasFixByHand: () =>
+    '   Удалять не нам — забери нужное из блока руками и запусти setup снова.',
   aliasNameChangeSkipped: (kept, requested) =>
     `   Оставили имя '${kept}', не меняли на '${requested}' — для переименования: --force-alias.`,
   hookCustomKept: () => '   твои настройки хука (timeout и т.п.) сохранены',

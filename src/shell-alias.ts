@@ -362,10 +362,14 @@ function preservedBlock(
   content: string,
   overwriteCustom: boolean,
 ): { kind: PreservedAliasKind; body: string } | null {
-  if (overwriteCustom) return null
-
   const block = readAliasBlock(content)
   if (block.kind === 'none' || block.kind === 'pristine') return null
+
+  // `--force-alias` means "yes, replace the alias I edited" — it does not mean
+  // "delete whatever you find between those markers". Content we cannot
+  // recognize as ours is never overwritten: there is no backup of an rc file,
+  // and the whole of this package refuses to destroy data it did not write.
+  if (overwriteCustom && block.kind === 'custom') return null
   return { kind: block.kind, body: block.body }
 }
 

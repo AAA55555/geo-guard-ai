@@ -134,7 +134,7 @@ Set the name explicitly:
 geo-guard setup --alias-name cc      # run Claude Code via `cc`
 ```
 
-Other people's aliases like `cc` / `c`, if already taken by something other than us, aren't overwritten either — the next free name is used.
+Other people's aliases like `cc` / `c`, if already taken by something other than us, aren't overwritten either: setup falls back to the first free name from `claude`, `cc`, `ccg`, `geoclaude`, and says which one it used and why.
 
 **If you added your own flags to our alias** — e.g.
 
@@ -200,7 +200,7 @@ Cursor deduplicates hooks it imported from Claude Code against hooks already dec
 
 **If Third-Party Imports is off**, the `~/.claude/settings.json` import doesn't happen at all — the explicit `~/.cursor/hooks.json` entry from `geo-guard setup` is then the *only* thing gating Cursor, and it keeps working normally.
 
-To see exactly what a hook host sees, pipe stdout: `geo-guard check | cat`. On success it prints exactly `{"continue":true}` with no trailing newline (this is the general `geo-guard check` contract on any non-interactive stdout, not a Cursor-only detail — Claude Code sees the same bytes). In an interactive terminal, stdout stays empty and `✔ geo-check ok` goes to stderr.
+To see exactly what a hook host sees, pipe stdout: `geo-guard check | cat`. On success it prints exactly `{"continue":true}` with no trailing newline (this is the general `geo-guard check` contract on any non-interactive stdout, not a Cursor-only detail — Claude Code sees the same bytes). In an interactive terminal, stdout stays empty and the confirmation (`✅ Geo-check: RU`) goes to stderr.
 
 Only the **global** `~/.cursor/hooks.json` is managed; project-level `.cursor/hooks.json` is out of scope.
 
@@ -229,7 +229,7 @@ geo-guard --help                # also help, -h
 | `-c, --countries ES,PT` | allowed countries |
 | `--shell zsh\|bash\|fish\|powershell` | target shell for the alias |
 | `--alias-name cc` | alias name (default `claude`; on collision it suggests another) |
-| `--force-alias` | overwrite an alias block you edited by hand (default: keep it) |
+| `--force-alias` | overwrite an alias block **of ours** that you edited (default: keep it). It never touches foreign content between the markers — there is no backup of an rc file, and geo-guard does not delete what it did not write |
 | `--hook` / `--no-hook` | install / skip the Claude Code hook |
 | `--cursor` / `--no-cursor` | install / skip the Cursor hook (default: install if `~/.cursor` exists) |
 | `--alias` / `--no-alias` | install / skip the alias |
