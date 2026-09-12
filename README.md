@@ -435,7 +435,7 @@ Git hooks (Husky):
 - **pre-commit** — `npm run typecheck`
 - **pre-push** — `npm run typecheck && npm test && npm run test:e2e && npm run test:pack`
 
-CI runs the full suite on Ubuntu across Node 18.20 / 20 / 22, and on Windows across the `engines` floor and the current release. The Windows job runs the unit suite and `windows-smoke.ps1`; it does not run `test:e2e` or `test:pack`, which skip themselves there — a green that means "nothing was checked" is worse than no job. That job earned its place on its first run, by catching that `spawn` refuses to launch a `.cmd` without a shell (CVE-2024-27980, in the very Node versions `engines` names) — which meant `geo-guard claude` could not start Claude Code on Windows at all, since npm installs global CLIs as `.cmd` shims.
+CI runs the full suite on Ubuntu across Node 18.20 / 20 / 22, on macOS (which has a branch of its own: a login bash shell there reads `~/.bash_profile`, not `~/.bashrc`), and on Windows across the `engines` floor and the current release. The Node version axis lives on Ubuntu; the other two are there for their platforms, not their Node versions. The Windows job runs the unit suite and `windows-smoke.ps1`; it does not run `test:e2e` or `test:pack`, which skip themselves there — a green that means "nothing was checked" is worse than no job. That job earned its place on its first run, by catching that `spawn` refuses to launch a `.cmd` without a shell (CVE-2024-27980, in the very Node versions `engines` names) — which meant `geo-guard claude` could not start Claude Code on Windows at all, since npm installs global CLIs as `.cmd` shims.
 
 ### Manual pre-release checklist
 
