@@ -20,7 +20,9 @@ const { isAllowed } = require('../dist/geo')
 const {
   stripMarkedBlock,
   findConflictingAlias,
-  isOurAliasBody,
+  isPristineAliasBody,
+  isGeoGuardAliasBody,
+  parseAliasBody,
   installAlias,
   uninstallAliasFromFile,
   candidateRcPaths,
@@ -206,16 +208,74 @@ describe('findConflictingAlias', () => {
   })
 })
 
-describe('isOurAliasBody', () => {
+describe('isPristineAliasBody', () => {
   test('matches generated bodies for any name', () => {
-    assert.equal(isOurAliasBody('alias claude="geo-guard claude"'), true)
-    assert.equal(isOurAliasBody('alias cc="geo-guard claude"'), true)
-    assert.equal(isOurAliasBody('function claude { geo-guard claude @args }'), true)
+    assert.equal(isPristineAliasBody('alias claude="geo-guard claude"'), true)
+    assert.equal(isPristineAliasBody('alias cc="geo-guard claude"'), true)
+    assert.equal(isPristineAliasBody('function claude { geo-guard claude @args }'), true)
   })
 
   test('rejects hand-edited body', () => {
-    assert.equal(isOurAliasBody('alias claude="rm -rf /"'), false)
-    assert.equal(isOurAliasBody('alias claude="geo-guard claude"\nexport FOO=1'), false)
+    assert.equal(isPristineAliasBody('alias claude="rm -rf /"'), false)
+    assert.equal(isPristineAliasBody('alias claude="geo-guard claude"\nexport FOO=1'), false)
+    // наш alias, но с флагами пользователя — уже не pristine
+    assert.equal(
+      isPristineAliasBody('alias claude="geo-guard claude --dangerously-skip-permissions"'),
+      false,
+    )
+  })
+})
+
+describe('isGeoGuardAliasBody / parseAliasBody', () => {
+  test('recognizes our alias with user flags', () => {
+    assert.equal(
+      isGeoGuardAliasBody('alias claude="geo-guard claude --dangerously-skip-permissions"'),
+      true,
+    )
+    assert.equal(isGeoGuardAliasBody("alias cc='geo-guard claude --verbose'"), true)
+    assert.equal(
+      isGeoGuardAliasBody('function claude { geo-guard claude --dangerously-skip-permissions @args }'),
+      true,
+    )
+    // pristine тоже наш
+    assert.equal(isGeoGuardAliasBody('alias claude="geo-guard claude"'), true)
+  })
+
+  test('rejects foreign bodies', () => {
+    assert.equal(isGeoGuardAliasBody('alias claude="rm -rf /"'), false)
+    assert.equal(isGeoGuardAliasBody('alias claude="something important"'), false)
+    // чужие строки, приклеенные к нашей, не должны проходить как «наше тело»
+    assert.equal(
+      isGeoGuardAliasBody('alias claude="geo-guard claude"\nexport SECRET=1'),
+      false,
+    )
+    assert.equal(
+      isGeoGuardAliasBody('function claude { geo-guard claude @args }\nexport SECRET=1'),
+      false,
+    )
+  })
+
+  test('parses name, command and extra args', () => {
+    assert.deepEqual(parseAliasBody('alias claude="geo-guard claude"'), {
+      name: 'claude',
+      command: 'claude',
+      extraArgs: '',
+    })
+    assert.deepEqual(
+      parseAliasBody('alias cc="geo-guard claude --dangerously-skip-permissions"'),
+      { name: 'cc', command: 'claude', extraArgs: '--dangerously-skip-permissions' },
+    )
+    // @args — часть нашего шаблона, не пользовательский флаг
+    assert.deepEqual(parseAliasBody('function claude { geo-guard claude @args }'), {
+      name: 'claude',
+      command: 'claude',
+      extraArgs: '',
+    })
+    assert.deepEqual(
+      parseAliasBody('function claude { geo-guard claude --verbose @args }'),
+      { name: 'claude', command: 'claude', extraArgs: '--verbose' },
+    )
+    assert.equal(parseAliasBody('alias claude="rm -rf /"'), null)
   })
 })
 
@@ -279,7 +339,7 @@ describe('install/uninstall alias via GEO_GUARD_RC', () => {
     const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\nexport IMPORTANT=1\n`
     fs.writeFileSync(rcFile, broken)
 
-    installAlias('zsh', { name: 'claude', force: true })
+    installAlias('zsh', { name: 'claude', skipConflictCheck: true })
     const after = fs.readFileSync(rcFile, 'utf8')
 
     // ровно один BEGIN и один END, пользовательская строка цела, наш блок на месте
@@ -294,6 +354,101 @@ describe('install/uninstall alias via GEO_GUARD_RC', () => {
     const cleaned = fs.readFileSync(rcFile, 'utf8')
     assert.doesNotMatch(cleaned, /geo-guard-ai begin/)
     assert.match(cleaned, /export IMPORTANT=1/)
+  })
+})
+
+describe('install preserves a customized alias block', () => {
+  let tmpDir
+  let rcFile
+  let prevRc
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-keep-'))
+    rcFile = path.join(tmpDir, '.zshrc')
+    prevRc = process.env.GEO_GUARD_RC
+    process.env.GEO_GUARD_RC = rcFile
+  })
+
+  after(() => {
+    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
+    else process.env.GEO_GUARD_RC = prevRc
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('keeps our alias with user flags byte-for-byte', () => {
+    const custom = `export FOO=1\n\n${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`
+    fs.writeFileSync(rcFile, custom)
+
+    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+
+    assert.equal(res.preserved, 'custom')
+    assert.equal(res.name, 'claude')
+    assert.match(res.existingBody, /--dangerously-skip-permissions/)
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), custom) // файл не тронут вообще
+  })
+
+  test('reports the name from the file, not the requested one', () => {
+    const custom = `${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`
+    fs.writeFileSync(rcFile, custom)
+
+    const res = installAlias('zsh', { name: 'cc', skipConflictCheck: true })
+
+    assert.equal(res.preserved, 'custom')
+    assert.equal(res.name, 'claude')
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), custom)
+  })
+
+  test('keeps foreign content between our markers', () => {
+    const foreign = `${BEGIN_MARKER}\nalias claude="something important"\n${END_MARKER}\n`
+    fs.writeFileSync(rcFile, foreign)
+
+    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+
+    assert.equal(res.preserved, 'foreign')
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), foreign)
+  })
+
+  test('overwriteCustom rewrites it on explicit request', () => {
+    const custom = `${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`
+    fs.writeFileSync(rcFile, custom)
+
+    const res = installAlias('zsh', {
+      name: 'claude',
+      skipConflictCheck: true,
+      overwriteCustom: true,
+    })
+
+    assert.equal(res.preserved, null)
+    const after = fs.readFileSync(rcFile, 'utf8')
+    assert.doesNotMatch(after, /--dangerously-skip-permissions/)
+    assert.match(after, /alias claude="geo-guard claude"/)
+  })
+
+  test('a pristine block is still regenerated', () => {
+    fs.writeFileSync(rcFile, `${BEGIN_MARKER}\nalias claude="geo-guard claude"\n${END_MARKER}\n`)
+
+    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+
+    assert.equal(res.preserved, null)
+    const after = fs.readFileSync(rcFile, 'utf8')
+    const begins = after.match(/geo-guard-ai begin/g) ?? []
+    assert.equal(begins.length, 1)
+  })
+
+  test('uninstall removes our customized block, keeps neighbours', () => {
+    fs.writeFileSync(
+      rcFile,
+      `alias ll="ls -la"\n${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\nexport FOO=1\n`,
+    )
+
+    const un = uninstallAliasFromFile(rcFile)
+
+    assert.equal(un.changed, true)
+    assert.equal(un.modified, false)
+    const after = fs.readFileSync(rcFile, 'utf8')
+    assert.doesNotMatch(after, /geo-guard/)
+    assert.match(after, /alias ll="ls -la"/)
+    assert.match(after, /export FOO=1/)
   })
 })
 
@@ -542,6 +697,83 @@ describe('claude-hook install/uninstall', () => {
     )
     assert.deepEqual(left, ['echo foreign-hook'])
   })
+
+  test('reinstall keeps the timeout and matcher the user edited', () => {
+    const settingsFile = settingsPath()
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true })
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        {
+          hooks: {
+            UserPromptSubmit: [
+              {
+                matcher: 'my-matcher',
+                hooks: [
+                  { type: 'command', command: 'geo-guard check', timeout: 30, statusMessage: 'mine' },
+                ],
+              },
+            ],
+          },
+        },
+        null,
+        2,
+      ),
+    )
+
+    const installed = installClaudeHook()
+    assert.equal(installed.kept, true)
+
+    const after = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+    const matchers = after.hooks.UserPromptSubmit
+    assert.equal(matchers.length, 1)
+    assert.equal(matchers[0].matcher, 'my-matcher')
+    assert.equal(matchers[0].hooks.length, 1)
+    assert.equal(matchers[0].hooks[0].timeout, 30)
+    assert.equal(matchers[0].hooks[0].statusMessage, 'mine')
+    assert.equal(matchers[0].hooks[0].command, 'geo-guard check')
+
+    uninstallClaudeHook()
+  })
+
+  test('reinstall over a pristine entry reports nothing kept and does not duplicate', () => {
+    const settingsFile = settingsPath()
+    if (fs.existsSync(settingsFile)) fs.unlinkSync(settingsFile)
+
+    assert.equal(installClaudeHook().kept, false)
+    assert.equal(installClaudeHook().kept, false)
+
+    const after = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+    const ours = after.hooks.UserPromptSubmit.flatMap(m =>
+      (m.hooks || []).filter(h => h.command === 'geo-guard check'),
+    )
+    assert.equal(ours.length, 1)
+    assert.equal(ours[0].timeout, 10)
+
+    uninstallClaudeHook()
+  })
+
+  test('legacy geo-check entry is upgraded in place', () => {
+    const settingsFile = settingsPath()
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true })
+    fs.writeFileSync(
+      settingsFile,
+      JSON.stringify(
+        { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'geo-check' }] }] } },
+        null,
+        2,
+      ),
+    )
+
+    installClaudeHook()
+
+    const after = JSON.parse(fs.readFileSync(settingsFile, 'utf8'))
+    const ours = after.hooks.UserPromptSubmit.flatMap(m => m.hooks || [])
+    assert.equal(ours.length, 1)
+    assert.equal(ours[0].command, 'geo-guard check')
+
+    uninstallClaudeHook()
+  })
 })
 
 describe('cursor-hook install/uninstall', () => {
@@ -617,6 +849,35 @@ describe('cursor-hook install/uninstall', () => {
     assert.equal(afterUninstall.hooks.beforeSubmitPrompt, undefined)
 
     fs.unlinkSync(existingBak)
+  })
+
+  test('reinstall keeps the failClosed / timeout the user edited', () => {
+    const file = cursorHooksPath()
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(
+      file,
+      JSON.stringify(
+        {
+          version: 1,
+          hooks: {
+            beforeSubmitPrompt: [{ command: hookCommand(), timeout: 45, failClosed: false }],
+          },
+        },
+        null,
+        2,
+      ),
+    )
+
+    const installed = installCursorHook()
+    assert.equal(installed.kept, true)
+
+    const data = JSON.parse(fs.readFileSync(file, 'utf8'))
+    assert.equal(data.hooks.beforeSubmitPrompt.length, 1)
+    assert.equal(data.hooks.beforeSubmitPrompt[0].timeout, 45)
+    assert.equal(data.hooks.beforeSubmitPrompt[0].failClosed, false)
+    assert.equal(data.hooks.beforeSubmitPrompt[0].command, hookCommand())
+
+    uninstallCursorHook()
   })
 
   test('uninstall on a missing file is a no-op, creates nothing', () => {

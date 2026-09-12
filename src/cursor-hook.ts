@@ -5,13 +5,22 @@ import path from 'node:path'
 import { msg } from './i18n'
 import { hookCommand, isOurHook } from './hook-shared'
 
-type CursorHook = Readonly<{
+type CursorHook = {
   type?: string
   command?: string
   timeout?: number
   failClosed?: boolean
   [key: string]: unknown
-}>
+}
+
+/** What we install when there is nothing to preserve. */
+function defaultHook(): CursorHook {
+  return {
+    command: hookCommand(),
+    timeout: 10,
+    failClosed: true,
+  }
+}
 
 type CursorHooksFile = {
   version?: number
@@ -70,19 +79,39 @@ function stripOurHooks(data: CursorHooksFile): CursorHooksFile {
   return data
 }
 
-export function installCursorHook(): { file: string; command: string } {
+export function installCursorHook(): { file: string; command: string; kept: boolean } {
   const { file, data } = readHooksFile()
-  stripOurHooks(data)
+
+  // Update our entry in place — the user may have raised the timeout or turned
+  // failClosed off; only the command is ours to rewrite. Duplicates are dropped.
+  const list = data.hooks?.beforeSubmitPrompt
+  let found = false
+  let kept = false
+  if (Array.isArray(list) && data.hooks) {
+    const next: CursorHook[] = []
+    for (const hook of list) {
+      if (!isOurHook(hook)) {
+        next.push(hook)
+        continue
+      }
+      if (found) continue
+      found = true
+      const updated: CursorHook = { ...defaultHook(), ...hook, command: hookCommand() }
+      kept = JSON.stringify(updated) !== JSON.stringify(defaultHook())
+      next.push(updated)
+    }
+    data.hooks.beforeSubmitPrompt = next
+  }
+
   data.version ??= 1
   data.hooks ??= {}
   data.hooks.beforeSubmitPrompt ??= []
-  data.hooks.beforeSubmitPrompt.push({
-    command: hookCommand(),
-    timeout: 10,
-    failClosed: true,
-  })
+  if (!found) {
+    data.hooks.beforeSubmitPrompt.push(defaultHook())
+  }
+
   writeHooksFile(file, data)
-  return { file, command: hookCommand() }
+  return { file, command: hookCommand(), kept }
 }
 
 export function uninstallCursorHook(): { file: string; changed: boolean } {

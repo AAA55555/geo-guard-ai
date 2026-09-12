@@ -27,11 +27,26 @@ function legacyOurLines(name: string): Set<string> {
   ])
 }
 
-/** Whether the block body matches what we generate (for any name). */
-const OUR_BODY_PATTERNS: RegExp[] = [
+/**
+ * Bodies we generate ourselves, byte-for-byte (for any alias name).
+ * Only such a block may be regenerated on install — anything else is the user's.
+ */
+const PRISTINE_BODY_PATTERNS: RegExp[] = [
   /^alias\s+[\w.-]+=(["'])geo-guard claude\1$/,
   /^function\s+[\w.-]+\s*\{\s*geo-guard claude @args\s*\}$/,
 ]
+
+/**
+ * Our alias *with the user's own flags added* — e.g.
+ * `alias claude="geo-guard claude --dangerously-skip-permissions"`.
+ * Still ours (uninstall may remove it), but install must not rewrite it.
+ *
+ * No `.` and no open-ended `[^"']`: without the `m` flag `$` is end-of-input,
+ * but a negated class would happily swallow newlines and match a body that has
+ * foreign lines glued below our alias.
+ */
+const ALIAS_BODY_RE = /^alias\s+([\w.-]+)=(["'])geo-guard[ \t]+([\w.-]+)([^"'\n]*)\2$/
+const FUNCTION_BODY_RE = /^function\s+([\w.-]+)[ \t]*\{[ \t]*geo-guard[ \t]+([\w.-]+)([^}\n]*)\}$/
 
 function escapeRe(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -173,8 +188,48 @@ function markedBlockBody(content: string): string | null {
 }
 
 /** true — if the block body is exactly what we generated (not edited by hand). */
-export function isOurAliasBody(body: string): boolean {
-  return OUR_BODY_PATTERNS.some(re => re.test(body))
+export function isPristineAliasBody(body: string): boolean {
+  return PRISTINE_BODY_PATTERNS.some(re => re.test(body))
+}
+
+export type ParsedAliasBody = Readonly<{
+  /** Alias / function name the body defines. */
+  name: string
+  /** Subcommand we are wrapping (normally `claude`). */
+  command: string
+  /** Whatever the user appended after it, trimmed ('' for a pristine body). */
+  extraArgs: string
+}>
+
+/**
+ * Parses a geo-guard alias body (pristine or with the user's flags).
+ * Returns null for anything that is not ours.
+ */
+export function parseAliasBody(body: string): ParsedAliasBody | null {
+  const trimmed = body.trim()
+
+  const alias = ALIAS_BODY_RE.exec(trimmed)
+  if (alias) {
+    return { name: alias[1] ?? '', command: alias[3] ?? '', extraArgs: (alias[4] ?? '').trim() }
+  }
+
+  const fn = FUNCTION_BODY_RE.exec(trimmed)
+  if (fn) {
+    // `@args` is part of our generated body, not a user flag.
+    const extra = (fn[3] ?? '').replace(/@args/g, '').trim()
+    return { name: fn[1] ?? '', command: fn[2] ?? '', extraArgs: extra }
+  }
+
+  return null
+}
+
+/**
+ * true — the body is ours, whether pristine or carrying the user's own flags.
+ * Wider than isPristineAliasBody on purpose: uninstall may remove such a block,
+ * install may not overwrite it.
+ */
+export function isGeoGuardAliasBody(body: string): boolean {
+  return parseAliasBody(body) !== null
 }
 
 /** Strips our previous unmanaged lines for a specific name. */
@@ -232,31 +287,63 @@ export function aliasConflictFor(
   return existing ? { file, existing } : null
 }
 
+/**
+ * Why an existing block was left alone:
+ * - `custom`  — our alias plus the user's own flags;
+ * - `foreign` — something else entirely between our markers.
+ */
+export type PreservedAliasKind = 'custom' | 'foreign'
+
 export type InstallAliasResult = {
   shell: ShellName
   file: string
   name: string
   snippet: string
+  /** null — the block was written; otherwise the file was not touched at all. */
+  preserved: PreservedAliasKind | null
+  /** The body we kept, when preserved. */
+  existingBody: string | null
 }
 
 /**
  * Writes the alias to the rc. Name defaults to `claude`.
- * If a foreign alias with this name is found and force is not set — throws AliasConflictError.
+ *
+ * An existing block is regenerated only if its body is exactly what we generate.
+ * A body the user has edited (say, `geo-guard claude --dangerously-skip-permissions`)
+ * is kept as is and the file is not touched — unless `overwriteCustom` is set.
+ *
+ * If a foreign alias with this name is found and `skipConflictCheck` is not set —
+ * throws AliasConflictError.
  */
 export function installAlias(
   shell: ShellName = detectShell(),
-  options: Readonly<{ name?: string; force?: boolean }> = {},
+  options: Readonly<{ name?: string; skipConflictCheck?: boolean; overwriteCustom?: boolean }> = {},
 ): InstallAliasResult {
   const name = options.name ?? DEFAULT_ALIAS_NAME
   const file = rcPathForShellResolved(shell)
   fs.mkdirSync(path.dirname(file), { recursive: true })
 
   const original = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
+
+  const body = markedBlockBody(original)
+  if (body !== null && !isPristineAliasBody(body) && !options.overwriteCustom) {
+    const parsed = parseAliasBody(body)
+    return {
+      shell,
+      file,
+      // For our own customized block the name in the file is the truth.
+      name: parsed?.name ?? name,
+      snippet: body,
+      preserved: parsed ? 'custom' : 'foreign',
+      existingBody: body,
+    }
+  }
+
   let content = stripMarkedBlock(original)
   content = stripOrphanBeginMarker(content)
   content = stripUnmanagedOurAlias(content, name)
 
-  if (!options.force) {
+  if (!options.skipConflictCheck) {
     const conflict = findConflictingAlias(content, shell, name)
     if (conflict) throw new AliasConflictError(name, conflict, file)
   }
@@ -265,7 +352,14 @@ export function installAlias(
   content += `\n${aliasSnippet(shell, name)}`
   fs.writeFileSync(file, content)
 
-  return { shell, file, name, snippet: aliasSnippet(shell, name).trim() }
+  return {
+    shell,
+    file,
+    name,
+    snippet: aliasSnippet(shell, name).trim(),
+    preserved: null,
+    existingBody: null,
+  }
 }
 
 export type UninstallAliasFileResult = {
@@ -289,8 +383,9 @@ export function uninstallAliasFromFile(file: string): UninstallAliasFileResult {
   }
 
   const body = markedBlockBody(before)
-  if (body !== null && !isOurAliasBody(body)) {
-    // Block edited by hand (not our body) — don't touch, it may hold something important.
+  if (body !== null && !isGeoGuardAliasBody(body)) {
+    // Foreign content between our markers — don't touch, it may hold something important.
+    // Our own alias carrying the user's extra flags is still ours and does get removed.
     return { file, changed: false, modified: true }
   }
 

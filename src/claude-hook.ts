@@ -7,17 +7,28 @@ import { hookCommand, isOurHook } from './hook-shared'
 
 export { hookCommand, isOurHook }
 
-type ClaudeHook = Readonly<{
+type ClaudeHook = {
   type?: string
   command?: string
   timeout?: number
   statusMessage?: string
-}>
+  [key: string]: unknown
+}
 
-type ClaudeHookMatcher = Readonly<{
+type ClaudeHookMatcher = {
   hooks?: ClaudeHook[]
   [key: string]: unknown
-}>
+}
+
+/** What we install when there is nothing to preserve. */
+function defaultHook(): ClaudeHook {
+  return {
+    type: 'command',
+    command: hookCommand(),
+    timeout: 10,
+    statusMessage: 'Geo-check…',
+  }
+}
 
 type ClaudeSettings = {
   hooks?: {
@@ -77,23 +88,59 @@ function stripOurHooks(settings: ClaudeSettings): ClaudeSettings {
   return settings
 }
 
-export function installClaudeHook(): { file: string; command: string } {
+/**
+ * Updates our entry in place (keeping the user's timeout/statusMessage and the
+ * matcher it sits in) and drops any duplicates. Returns whether one was found
+ * and whether it carried settings of the user's own.
+ */
+function updateOurHooksInPlace(settings: ClaudeSettings): { found: boolean; kept: boolean } {
+  const matchers = settings.hooks?.UserPromptSubmit
+  if (!Array.isArray(matchers)) return { found: false, kept: false }
+
+  let found = false
+  let kept = false
+
+  for (const matcher of matchers) {
+    const hooks = matcher.hooks
+    if (!Array.isArray(hooks)) continue
+
+    const next: ClaudeHook[] = []
+    for (const hook of hooks) {
+      if (!isOurHook(hook)) {
+        next.push(hook)
+        continue
+      }
+      // Only the first one survives — the rest are leftovers from older installs.
+      if (found) continue
+      found = true
+      const updated: ClaudeHook = { ...defaultHook(), ...hook, command: hookCommand() }
+      kept = JSON.stringify(updated) !== JSON.stringify(defaultHook())
+      next.push(updated)
+    }
+    matcher.hooks = next
+  }
+
+  return { found, kept }
+}
+
+export function installClaudeHook(): { file: string; command: string; kept: boolean } {
   const { file, settings } = readSettings()
-  stripOurHooks(settings)
-  settings.hooks ??= {}
-  settings.hooks.UserPromptSubmit ??= []
-  settings.hooks.UserPromptSubmit.push({
-    hooks: [
-      {
-        type: 'command',
-        command: hookCommand(),
-        timeout: 10,
-        statusMessage: 'Geo-check…',
-      },
-    ],
-  })
+
+  const { found, kept } = updateOurHooksInPlace(settings)
+  if (!found) {
+    settings.hooks ??= {}
+    settings.hooks.UserPromptSubmit ??= []
+    settings.hooks.UserPromptSubmit.push({ hooks: [defaultHook()] })
+  } else {
+    // Matchers that held nothing but our duplicates are now empty.
+    const matchers = settings.hooks?.UserPromptSubmit
+    if (Array.isArray(matchers) && settings.hooks) {
+      settings.hooks.UserPromptSubmit = matchers.filter(m => (m.hooks?.length ?? 0) > 0)
+    }
+  }
+
   writeSettings(file, settings)
-  return { file, command: hookCommand() }
+  return { file, command: hookCommand(), kept }
 }
 
 export function uninstallClaudeHook(): { file: string; changed: boolean } {
