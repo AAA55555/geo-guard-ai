@@ -1,16 +1,102 @@
 import { spawn } from 'node:child_process'
+import path from 'node:path'
 
-import { loadConfig } from './config'
+import {
+  loadConfig,
+  loadStrictestConfig,
+  isProfileName,
+  profilesConfigured,
+  PROFILE_NAMES,
+  type GeoGuardConfig,
+  type ProfileName,
+} from './config'
 import { detectCountry, isAllowed } from './geo'
+import { profileFromEvent, readHookPayload } from './hook-payload'
 import { resolveRealBin } from './resolve-bin'
 import { msg } from './i18n'
 
-export async function runCheck(): Promise<void> {
+/**
+ * `--profile cursor` / `--profile=cursor`, for manual runs and debugging.
+ * Anything else is rejected rather than ignored: a mistyped flag must not
+ * silently leave us on a policy the user didn't ask for.
+ */
+function profileFromArgs(argv: readonly string[]): ProfileName | null {
+  let raw: string | null = null
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i]
+    if (arg === undefined) continue
+    if (arg === '--profile') {
+      raw = argv[++i] ?? ''
+    } else if (arg.startsWith('--profile=')) {
+      raw = arg.slice('--profile='.length)
+    } else {
+      throw new Error(msg().unknownCheckArg(arg))
+    }
+  }
+  if (raw === null) return null
+  if (!isProfileName(raw)) {
+    // Fail closed: a typo must not silently fall back to the shared policy.
+    throw new Error(msg().unknownProfile(raw, PROFILE_NAMES.join(', ')))
+  }
+  return raw
+}
+
+/** The policy `check` should apply, and the profile name to report on a block. */
+type CheckPolicy = Readonly<{ config: GeoGuardConfig; profile?: ProfileName }>
+
+/**
+ * Which policy this check runs under: explicit flag, then env, then the hook
+ * host's own payload.
+ *
+ * With no profile configured anywhere — or with nothing piped in, which means a
+ * person ran `geo-guard check` by hand — this is the shared config, exactly how
+ * geo-guard behaved before profiles existed. The one case that is neither is a
+ * host that piped us something unidentifiable: there we fall back to the
+ * strictest policy rather than quietly picking the most permissive one.
+ */
+async function resolveCheckPolicy(argv: readonly string[]): Promise<CheckPolicy> {
+  const fromArgs = profileFromArgs(argv)
+  if (fromArgs) return { config: loadConfig(fromArgs), profile: fromArgs }
+
+  const fromEnv = process.env.GEO_GUARD_PROFILE
+  if (fromEnv !== undefined && fromEnv !== '') {
+    if (!isProfileName(fromEnv)) {
+      throw new Error(msg().unknownProfile(fromEnv, PROFILE_NAMES.join(', ')))
+    }
+    return { config: loadConfig(fromEnv), profile: fromEnv }
+  }
+
+  // Nothing is configured per tool — don't pay for reading stdin at all.
+  if (!profilesConfigured()) return { config: loadConfig() }
+
+  const result = await readHookPayload()
+  if (result.kind === 'none') return { config: loadConfig() }
+
+  if (result.kind === 'payload') {
+    const profile = profileFromEvent(result.payload.hook_event_name)
+    if (profile) return { config: loadConfig(profile), profile }
+  }
+
+  return { config: loadStrictestConfig() }
+}
+
+/** The profile a wrapped command belongs to (`geo-guard claude …`). */
+export function profileForCommand(command: string): ProfileName | undefined {
+  const base = path
+    .basename(command)
+    .toLowerCase()
+    .replace(/\.(cmd|bat|exe|ps1)$/, '')
+  if (base === 'claude') return 'claude'
+  if (base === 'cursor' || base === 'cursor-agent') return 'cursor'
+  return undefined
+}
+
+export async function runCheck(argv: readonly string[] = []): Promise<void> {
   // Hook UserPromptSubmit: exit 2 = block. ANY error (broken config, EPIPE on
   // stderr, a future throw) must lead to a block, not exit 1 (fail-open).
   // Hence the whole body is in a single try, any throw → exit 2.
   try {
-    const config = loadConfig()
+    const { config, profile } = await resolveCheckPolicy(argv)
     const country = await detectCountry(config)
 
     if (!country) {
@@ -19,7 +105,9 @@ export async function runCheck(): Promise<void> {
     }
 
     if (!isAllowed(country, config)) {
-      console.error(msg().checkCountryNotAllowedBlocked(country, config.allowed.join(',')))
+      console.error(
+        msg().checkCountryNotAllowedBlocked(country, config.allowed.join(','), profile),
+      )
       process.exit(2)
     }
 
@@ -57,7 +145,7 @@ export async function runWrap(
     process.exit(1)
   }
 
-  const config = loadConfig()
+  const config = loadConfig(profileForCommand(command))
   let realBin: string
   try {
     realBin = resolveRealBin(command, {
@@ -77,7 +165,13 @@ export async function runWrap(
   }
 
   if (!isAllowed(country, config)) {
-    console.error(msg().wrapCountryNotAllowedBlocked(country, config.allowed.join(',')))
+    console.error(
+      msg().wrapCountryNotAllowedBlocked(
+        country,
+        config.allowed.join(','),
+        profileForCommand(command),
+      ),
+    )
     process.exit(1)
   }
 

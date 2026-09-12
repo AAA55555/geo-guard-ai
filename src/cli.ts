@@ -1,5 +1,6 @@
 import path from 'node:path'
 
+import { runConfig } from './config-cmd'
 import { runSetup } from './setup'
 import { runUninstall } from './uninstall'
 import { runCheck, runWrap } from './run'
@@ -9,6 +10,7 @@ import { msg } from './i18n'
 const SUBCOMMANDS = new Set([
   'setup',
   'uninstall',
+  'config',
   'check',
   'help',
   '--help',
@@ -45,8 +47,11 @@ async function main(): Promise<void> {
       case 'uninstall':
         await runUninstall(argv.slice(1))
         return
+      case 'config':
+        await runConfig(argv.slice(1))
+        return
       case 'check':
-        await runCheck()
+        await runCheck(argv.slice(1))
         return
       default:
         printHelp()

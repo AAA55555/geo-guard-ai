@@ -4,10 +4,11 @@ import path from 'node:path'
 
 import {
   writeConfig,
-  parseAllowed,
-  invalidCountryTokens,
+  loadConfig,
+  validatedAllowed,
   DEFAULT_CONFIG,
   configPath,
+  type ProfileName,
 } from './config'
 import { installClaudeHook } from './claude-hook'
 import { installCursorHook } from './cursor-hook'
@@ -33,6 +34,8 @@ export type SetupOptions = Readonly<{
   aliasName: string | null
   forceAlias: boolean
   cursor: boolean | null
+  claudeCountries: string | null
+  cursorCountries: string | null
 }>
 
 /** Whether `~/.cursor` exists — gate for the cursor-hook question in --yes mode. */
@@ -107,6 +110,8 @@ export function parseArgs(argv: string[]): SetupOptions {
     aliasName: string | null
     forceAlias: boolean
     cursor: boolean | null
+    claudeCountries: string | null
+    cursorCountries: string | null
   } = {
     yes: false,
     countries: null,
@@ -116,26 +121,44 @@ export function parseArgs(argv: string[]): SetupOptions {
     aliasName: null,
     forceAlias: false,
     cursor: null,
+    claudeCountries: null,
+    cursorCountries: null,
   }
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
     if (arg === undefined) continue
 
+    const valueFor = (name: string): string => {
+      const value = argv[++i]
+      if (value === undefined || value.startsWith('-')) {
+        throw new Error(msg().optionNeedsValue(name))
+      }
+      return value
+    }
+
     if (arg === '--yes' || arg === '-y') {
       opts.yes = true
     } else if (arg === '--countries' || arg === '-c') {
-      opts.countries = argv[++i] ?? null
+      opts.countries = valueFor('--countries')
     } else if (arg.startsWith('--countries=')) {
       opts.countries = arg.slice('--countries='.length)
     } else if (arg === '--shell') {
-      opts.shell = argv[++i] ?? null
+      opts.shell = valueFor('--shell')
     } else if (arg.startsWith('--shell=')) {
       opts.shell = arg.slice('--shell='.length)
     } else if (arg === '--alias-name') {
-      opts.aliasName = argv[++i] ?? null
+      opts.aliasName = valueFor('--alias-name')
     } else if (arg.startsWith('--alias-name=')) {
       opts.aliasName = arg.slice('--alias-name='.length)
+    } else if (arg === '--claude-countries') {
+      opts.claudeCountries = valueFor('--claude-countries')
+    } else if (arg.startsWith('--claude-countries=')) {
+      opts.claudeCountries = arg.slice('--claude-countries='.length)
+    } else if (arg === '--cursor-countries') {
+      opts.cursorCountries = valueFor('--cursor-countries')
+    } else if (arg.startsWith('--cursor-countries=')) {
+      opts.cursorCountries = arg.slice('--cursor-countries='.length)
     } else if (arg === '--force-alias') {
       opts.forceAlias = true
     } else if (arg === '--no-hook') {
@@ -169,6 +192,8 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   let shell: ShellName = detectedShell
   let aliasName: string = opts.aliasName ?? DEFAULT_ALIAS_NAME
   let aliasSkipReason = ''
+  let claudeCountries = opts.claudeCountries
+  let cursorCountries = opts.cursorCountries
 
   // The alias name goes into the rc as `alias <name>=…` — spaces and special
   // characters are not allowed, otherwise the line breaks. Allow letters/digits/_/-/.
@@ -187,8 +212,10 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   if (!opts.yes) {
     await withPromptSession(async prompt => {
       if (!countries) {
+        // The default offered is what is configured now, not the built-in one:
+        // pressing Enter on an already-configured machine must change nothing.
         countries = await prompt.ask(msg().promptCountries(), {
-          defaultValue: DEFAULT_CONFIG.allowed.join(','),
+          defaultValue: loadConfig().allowed.join(',') || DEFAULT_CONFIG.allowed.join(','),
         })
       }
       if (wantHook === null) {
@@ -200,6 +227,16 @@ export async function runSetup(argv: string[] = []): Promise<void> {
         wantCursor = await prompt.askYesNo(msg().promptInstallCursorHook(), {
           defaultYes: true,
         })
+      }
+      if (wantCursor && cursorCountries === null) {
+        const separate = await prompt.askYesNo(msg().promptCursorSeparateCountries(), {
+          defaultYes: false,
+        })
+        if (separate) {
+          cursorCountries = await prompt.ask(msg().promptCursorCountries(), {
+            defaultValue: countries ?? loadConfig().allowed.join(','),
+          })
+        }
       }
       if (wantAlias === null) {
         wantAlias = await prompt.askYesNo(msg().promptAddAlias(aliasName, shell), {
@@ -228,7 +265,6 @@ export async function runSetup(argv: string[] = []): Promise<void> {
       }
     })
   } else {
-    countries = countries || DEFAULT_CONFIG.allowed.join(',')
     if (wantHook === null) wantHook = true
     if (wantCursor === null) wantCursor = cursorDirExists()
     if (wantAlias === null) wantAlias = true
@@ -244,18 +280,33 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     }
   }
 
-  const invalid = invalidCountryTokens(countries)
-  if (invalid.length > 0) {
-    throw new Error(msg().invalidCountryCodes(invalid.join(', ')))
+  // Validate every list before writing anything: a typo in --cursor-countries
+  // must not leave the shared list already rewritten.
+  const profileLists: [ProfileName, string[]][] = []
+  if (claudeCountries !== null) {
+    profileLists.push(['claude', validatedAllowed(claudeCountries)])
   }
-  const allowed = parseAllowed(countries)
-  if (allowed.length === 0) {
-    throw new Error(msg().emptyCountryList())
+  if (cursorCountries !== null) {
+    profileLists.push(['cursor', validatedAllowed(cursorCountries)])
   }
 
-  const { file: cfgFile, config } = writeConfig({ allowed })
+  // No country list given (--yes without -c, or a profile-only run) → leave the
+  // configured one alone. Passing DEFAULT_CONFIG here would silently reset a
+  // machine that is already set up, which is now a normal thing to do: people
+  // re-run setup to add a profile.
+  let partial: { allowed?: string[] } = {}
+  if (countries !== null) {
+    partial = { allowed: validatedAllowed(countries) }
+  }
+
+  const { file: cfgFile, config } = writeConfig(partial)
   console.log(msg().configWritten(cfgFile))
   console.log(msg().allowedLine(config.allowed.join(', ')))
+
+  for (const [profile, list] of profileLists) {
+    const written = writeConfig({ allowed: list }, { profile })
+    console.log(msg().allowedProfileLine(profile, written.config.allowed.join(', ')))
+  }
 
   if (wantHook) {
     const hook = installClaudeHook()

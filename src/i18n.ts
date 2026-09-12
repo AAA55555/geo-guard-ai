@@ -27,6 +27,21 @@ export type Messages = {
   emptyCountryList: () => string
   invalidCountryCodes: (codes: string) => string
   postinstallHint: () => string
+  unknownProfile: (name: string, list: string) => string
+  unknownCheckArg: (arg: string) => string
+  optionNeedsValue: (name: string) => string
+
+  // --- config command ---
+  unknownConfigArg: (arg: string) => string
+  configUnsetNeedsProfile: (list: string) => string
+  configUnsetWithCountries: () => string
+  configProfileUnset: (profile: string) => string
+  configProfileNotSet: (profile: string) => string
+  configLineShared: (allowed: string, timeoutSeconds: number) => string
+  configLineProfile: (profile: string, allowed: string, source: string) => string
+  configSourceProfile: () => string
+  configSourceInherited: () => string
+  allowedProfileLine: (profile: string, list: string) => string
 
   // --- setup: prompts ---
   promptCountries: () => string
@@ -35,6 +50,8 @@ export type Messages = {
   promptAddAlias: (name: string, shell: string) => string
   promptShell: (list: string) => string
   promptAliasName: () => string
+  promptCursorSeparateCountries: () => string
+  promptCursorCountries: () => string
 
   // --- setup: alias conflict (interactive) ---
   aliasConflictHeader: (file: string, name: string) => string
@@ -67,13 +84,13 @@ export type Messages = {
 
   // --- check / wrap (run.ts) ---
   checkNoCountryBlocked: () => string
-  checkCountryNotAllowedBlocked: (country: string, allowed: string) => string
+  checkCountryNotAllowedBlocked: (country: string, allowed: string, profile?: string) => string
   checkErrorBlocked: (message: string) => string
   wrapNoCommand: () => string
   wrapSetupHint: () => string
   wrapError: (message: string) => string
   wrapNoCountryBlocked: () => string
-  wrapCountryNotAllowedBlocked: (country: string, allowed: string) => string
+  wrapCountryNotAllowedBlocked: (country: string, allowed: string, profile?: string) => string
   wrapGeoCheckOk: (country: string) => string
   wrapSpawnFailed: (bin: string, message: string) => string
 
@@ -107,6 +124,7 @@ const en: Messages = {
 Usage:
   geo-guard setup [options]     interactive setup
   geo-guard uninstall [--keep-config]  remove our traces (hook, alias, config)
+  geo-guard config [options]    show / change the allowed countries
   geo-guard check               hook check (exit 0/2)
   geo-guard <command> [args…]   check geo and run the command
 
@@ -119,6 +137,14 @@ setup options:
   --alias / --no-alias
   --alias-name cc           alias name (default claude; on collision suggests another)
   --force-alias             overwrite an alias block you edited by hand
+  --claude-countries ES,PT  countries for Claude Code only
+  --cursor-countries PL     countries for Cursor only
+
+config options:
+  (no options)              show the effective config
+  -c, --countries ES,PT     set the countries
+  -p, --profile claude|cursor   apply to that tool only
+  --unset --profile cursor  drop the profile, back to the shared list
 
 uninstall options:
   --keep-config             don't delete config.json
@@ -128,6 +154,7 @@ Examples:
   npm install -g geo-guard-ai
   geo-guard setup
   geo-guard setup --countries ES,PT --yes
+  geo-guard config --countries PL --profile cursor
   geo-guard claude --version
 `,
 
@@ -140,6 +167,22 @@ Examples:
   invalidCountryCodes: codes =>
     `Invalid country code(s): ${codes}. Use ISO 3166-1 alpha-2 (e.g. ES, PT)`,
   postinstallHint: () => 'run  geo-guard setup',
+  unknownProfile: (name, list) => `Unknown profile: '${name}'. Available: ${list}`,
+  unknownCheckArg: arg => `Unknown check argument: ${arg}`,
+  optionNeedsValue: name => `Option ${name} needs a value`,
+
+  unknownConfigArg: arg => `Unknown config argument: ${arg}`,
+  configUnsetNeedsProfile: list => `--unset needs a profile: --profile <${list}>`,
+  configUnsetWithCountries: () => '--unset and --countries cannot be combined',
+  configProfileUnset: profile => `✅ profile '${profile}' removed — it inherits the shared list now`,
+  configProfileNotSet: profile => `⏭  profile '${profile}' had no settings of its own`,
+  configLineShared: (allowed, timeoutSeconds) =>
+    `  shared   allowed: ${allowed}   timeout: ${timeoutSeconds}s`,
+  configLineProfile: (profile, allowed, source) =>
+    `  ${profile.padEnd(8)} allowed: ${allowed}   (${source})`,
+  configSourceProfile: () => 'own profile',
+  configSourceInherited: () => 'inherited',
+  allowedProfileLine: (profile, list) => `   allowed for ${profile}: ${list}`,
 
   promptCountries: () => 'Allowed countries (ISO, comma-separated)',
   promptInstallHook: () => 'Install the Claude Code hook (UserPromptSubmit)?',
@@ -147,6 +190,8 @@ Examples:
   promptAddAlias: (name, shell) => `Add alias ${name} → geo-guard claude to ${shell}?`,
   promptShell: list => `Shell for the alias (${list})`,
   promptAliasName: () => 'Name for the geo-guard alias (empty — skip alias)',
+  promptCursorSeparateCountries: () => 'Use a different country list for Cursor?',
+  promptCursorCountries: () => 'Allowed countries for Cursor (ISO, comma-separated)',
 
   aliasConflictHeader: (file, name) => `⚠️  ${file} already has its own alias '${name}':`,
   aliasWontTouch: () => '   geo-guard will not touch it.',
@@ -180,16 +225,20 @@ Examples:
 
   checkNoCountryBlocked: () =>
     '🚫 Geo-check: could not determine country (no network?). Request blocked.',
-  checkCountryNotAllowedBlocked: (country, allowed) =>
-    `🚫 Geo-check: country '${country}' is not allowed by policy (allowed: ${allowed}). Request blocked.`,
+  checkCountryNotAllowedBlocked: (country, allowed, profile) => {
+    const policy = profile ? `the '${profile}' policy` : 'policy'
+    return `🚫 Geo-check: country '${country}' is not allowed by ${policy} (allowed: ${allowed}). Request blocked.`
+  },
   checkErrorBlocked: message => `🚫 Geo-check: check failed (${message}). Request blocked.`,
   wrapNoCommand: () => '🚫 geo-guard: specify a command. Example: geo-guard claude',
   wrapSetupHint: () => '   Setup: geo-guard setup',
   wrapError: message => `🚫 geo-guard: ${message}`,
   wrapNoCountryBlocked: () =>
     '🚫 Geo-check: could not determine country (no network?). Launch blocked.',
-  wrapCountryNotAllowedBlocked: (country, allowed) =>
-    `🚫 Geo-check: country '${country}' is not allowed by policy (allowed: ${allowed}). Launch blocked.`,
+  wrapCountryNotAllowedBlocked: (country, allowed, profile) => {
+    const policy = profile ? `the '${profile}' policy` : 'policy'
+    return `🚫 Geo-check: country '${country}' is not allowed by ${policy} (allowed: ${allowed}). Launch blocked.`
+  },
   wrapGeoCheckOk: country => `✅ Geo-check: ${country}`,
   wrapSpawnFailed: (bin, message) => `🚫 geo-guard: failed to launch ${bin}: ${message}`,
 
@@ -223,6 +272,7 @@ const ru: Messages = {
 Использование:
   geo-guard setup [options]     интерактивная настройка
   geo-guard uninstall [--keep-config]  убрать наши следы (hook, alias, конфиг)
+  geo-guard config [options]    показать / изменить разрешённые страны
   geo-guard check               hook-проверка (exit 0/2)
   geo-guard <command> [args…]   проверить гео и запустить команду
 
@@ -235,6 +285,14 @@ setup options:
   --alias / --no-alias
   --alias-name cc           имя alias (дефолт claude; при коллизии предложит другое)
   --force-alias             перезаписать alias-блок, который правил вручную
+  --claude-countries ES,PT  страны только для Claude Code
+  --cursor-countries PL     страны только для Cursor
+
+config options:
+  (без опций)               показать эффективный конфиг
+  -c, --countries ES,PT     задать страны
+  -p, --profile claude|cursor   применить только к этому инструменту
+  --unset --profile cursor  убрать профиль, вернуться к общему списку
 
 uninstall options:
   --keep-config             не удалять config.json
@@ -244,6 +302,7 @@ uninstall options:
   npm install -g geo-guard-ai
   geo-guard setup
   geo-guard setup --countries ES,PT --yes
+  geo-guard config --countries PL --profile cursor
   geo-guard claude --version
 `,
 
@@ -256,6 +315,22 @@ uninstall options:
   invalidCountryCodes: codes =>
     `Некорректный код(ы) страны: ${codes}. Нужен ISO 3166-1 alpha-2 (например ES, PT)`,
   postinstallHint: () => 'запусти  geo-guard setup',
+  unknownProfile: (name, list) => `Неизвестный профиль: '${name}'. Доступны: ${list}`,
+  unknownCheckArg: arg => `Неизвестный аргумент check: ${arg}`,
+  optionNeedsValue: name => `Опция ${name} требует значения`,
+
+  unknownConfigArg: arg => `Неизвестный аргумент config: ${arg}`,
+  configUnsetNeedsProfile: list => `--unset требует профиль: --profile <${list}>`,
+  configUnsetWithCountries: () => '--unset и --countries нельзя вместе',
+  configProfileUnset: profile => `✅ профиль '${profile}' удалён — теперь наследует общий список`,
+  configProfileNotSet: profile => `⏭  у профиля '${profile}' не было своих настроек`,
+  configLineShared: (allowed, timeoutSeconds) =>
+    `  общее    allowed: ${allowed}   timeout: ${timeoutSeconds}s`,
+  configLineProfile: (profile, allowed, source) =>
+    `  ${profile.padEnd(8)} allowed: ${allowed}   (${source})`,
+  configSourceProfile: () => 'свой профиль',
+  configSourceInherited: () => 'наследует',
+  allowedProfileLine: (profile, list) => `   allowed для ${profile}: ${list}`,
 
   promptCountries: () => 'Разрешённые страны (ISO, через запятую)',
   promptInstallHook: () => 'Установить hook Claude Code (UserPromptSubmit)?',
@@ -263,6 +338,8 @@ uninstall options:
   promptAddAlias: (name, shell) => `Добавить alias ${name} → geo-guard claude в ${shell}?`,
   promptShell: list => `Shell для alias (${list})`,
   promptAliasName: () => 'Имя для geo-guard alias (пусто — пропустить alias)',
+  promptCursorSeparateCountries: () => 'Для Cursor нужен отдельный список стран?',
+  promptCursorCountries: () => 'Разрешённые страны для Cursor (ISO, через запятую)',
 
   aliasConflictHeader: (file, name) => `⚠️  В ${file} уже есть свой alias '${name}':`,
   aliasWontTouch: () => '   geo-guard его не тронет.',
@@ -296,16 +373,20 @@ uninstall options:
 
   checkNoCountryBlocked: () =>
     '🚫 Geo-check: не удалось определить страну (нет сети?). Запрос заблокирован.',
-  checkCountryNotAllowedBlocked: (country, allowed) =>
-    `🚫 Geo-check: страна '${country}' не разрешена политикой (разрешено: ${allowed}). Запрос заблокирован.`,
+  checkCountryNotAllowedBlocked: (country, allowed, profile) => {
+    const policy = profile ? `политикой '${profile}'` : 'политикой'
+    return `🚫 Geo-check: страна '${country}' не разрешена ${policy} (разрешено: ${allowed}). Запрос заблокирован.`
+  },
   checkErrorBlocked: message => `🚫 Geo-check: ошибка проверки (${message}). Запрос заблокирован.`,
   wrapNoCommand: () => '🚫 geo-guard: укажи команду. Пример: geo-guard claude',
   wrapSetupHint: () => '   Настройка: geo-guard setup',
   wrapError: message => `🚫 geo-guard: ${message}`,
   wrapNoCountryBlocked: () =>
     '🚫 Geo-check: не удалось определить страну (нет сети?). Запуск заблокирован.',
-  wrapCountryNotAllowedBlocked: (country, allowed) =>
-    `🚫 Geo-check: страна '${country}' не разрешена политикой (разрешено: ${allowed}). Запуск заблокирован.`,
+  wrapCountryNotAllowedBlocked: (country, allowed, profile) => {
+    const policy = profile ? `политикой '${profile}'` : 'политикой'
+    return `🚫 Geo-check: страна '${country}' не разрешена ${policy} (разрешено: ${allowed}). Запуск заблокирован.`
+  },
   wrapGeoCheckOk: country => `✅ Geo-check: ${country}`,
   wrapSpawnFailed: (bin, message) => `🚫 geo-guard: не удалось запустить ${bin}: ${message}`,
 

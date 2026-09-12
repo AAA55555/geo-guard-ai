@@ -14,10 +14,29 @@ export type GeoGuardConfig = Readonly<{
   providers: string[]
 }>
 
+/**
+ * Tools that can be gated separately. Claude Code and Cursor normally share one
+ * policy, but a profile lets them diverge (different clients, different rules).
+ */
+export const PROFILE_NAMES = ['claude', 'cursor'] as const
+export type ProfileName = (typeof PROFILE_NAMES)[number]
+
+export function isProfileName(value: unknown): value is ProfileName {
+  return typeof value === 'string' && (PROFILE_NAMES as readonly string[]).includes(value)
+}
+
+/** A per-tool override. Every field is optional; what's absent is inherited. */
+export type GeoGuardProfileFile = Partial<{
+  allowed: string[] | string
+  timeoutMs: number
+  providers: string[]
+}>
+
 export type GeoGuardConfigFile = Partial<{
   allowed: string[] | string
   timeoutMs: number
   providers: string[]
+  profiles: Partial<Record<ProfileName, GeoGuardProfileFile>>
 }>
 
 export const DEFAULT_CONFIG: GeoGuardConfig = Object.freeze({
@@ -104,25 +123,72 @@ function normalizeProviders(value: readonly unknown[]): string[] {
   return value.map(v => String(v).trim()).filter(Boolean)
 }
 
-/** Priority: env > config.json > defaults. */
-export function loadConfig(): GeoGuardConfig {
-  const file = readConfigFile()
+const ENV_BASES = ['GEO_GUARD_ALLOWED', 'GEO_GUARD_TIMEOUT', 'GEO_GUARD_PROVIDERS'] as const
 
+/**
+ * Env var for a setting, profile-specific first: GEO_GUARD_ALLOWED_CURSOR
+ * beats GEO_GUARD_ALLOWED. Returns undefined only if neither is set — an
+ * empty string is a value (see the fail-closed note in loadConfig).
+ */
+function envValue(base: (typeof ENV_BASES)[number], profile?: ProfileName): string | undefined {
+  if (profile) {
+    const scoped = process.env[`${base}_${profile.toUpperCase()}`]
+    if (scoped !== undefined) return scoped
+  }
+  return process.env[base]
+}
+
+/** The profile section from an already-read file, if the profile has one. */
+function profileSection(
+  file: GeoGuardConfigFile,
+  profile?: ProfileName,
+): GeoGuardProfileFile | undefined {
+  if (!profile) return undefined
+  return file.profiles?.[profile]
+}
+
+/**
+ * Whether anything profile-specific is configured at all — in the file or in
+ * the env. When nothing is, callers can skip working out which tool is asking.
+ */
+export function profilesConfigured(): boolean {
+  const file = readConfigFile()
+  if (PROFILE_NAMES.some(p => file.profiles?.[p] !== undefined)) return true
+  return PROFILE_NAMES.some(profileEnvSet)
+}
+
+/**
+ * Priority, highest first:
+ *   GEO_GUARD_*_<PROFILE> env > GEO_GUARD_* env
+ *   > profiles.<profile> in config.json > top level in config.json > defaults.
+ *
+ * Without a profile this is exactly the old behaviour, so a config.json with no
+ * `profiles` section keeps working unchanged.
+ */
+export function loadConfig(profile?: ProfileName): GeoGuardConfig {
+  const file = readConfigFile()
+  const section = profileSection(file, profile)
+
+  const allowedEnv = envValue('GEO_GUARD_ALLOWED', profile)
   // Deliberately !== undefined, not truthy: an empty GEO_GUARD_ALLOWED='' is a
   // conscious "nothing allowed" → allowed=[] → block. A truthy check would
   // silently fall back to the default (fail-open).
-  const allowed = process.env.GEO_GUARD_ALLOWED !== undefined
-    ? parseAllowed(process.env.GEO_GUARD_ALLOWED)
-    : parseAllowed(file.allowed ?? DEFAULT_CONFIG.allowed)
+  const allowed = allowedEnv !== undefined
+    ? parseAllowed(allowedEnv)
+    : parseAllowed(section?.allowed ?? file.allowed ?? DEFAULT_CONFIG.allowed)
 
-  const timeoutMs = process.env.GEO_GUARD_TIMEOUT
-    ? parseTimeoutSeconds(process.env.GEO_GUARD_TIMEOUT)
-    : Number(file.timeoutMs ?? DEFAULT_CONFIG.timeoutMs)
+  const timeoutEnv = envValue('GEO_GUARD_TIMEOUT', profile)
+  const timeoutMs = timeoutEnv
+    ? parseTimeoutSeconds(timeoutEnv)
+    : Number(section?.timeoutMs ?? file.timeoutMs ?? DEFAULT_CONFIG.timeoutMs)
 
   // An empty providers list ([] or empty env) is honored as "no providers" → detect returns null → block.
+  const providersEnv = envValue('GEO_GUARD_PROVIDERS', profile)
   let providers: string[]
-  if (process.env.GEO_GUARD_PROVIDERS !== undefined) {
-    providers = normalizeProviders(process.env.GEO_GUARD_PROVIDERS.trim().split(/\s+/))
+  if (providersEnv !== undefined) {
+    providers = normalizeProviders(providersEnv.trim().split(/\s+/))
+  } else if (Array.isArray(section?.providers)) {
+    providers = normalizeProviders(section.providers)
   } else if (Array.isArray(file.providers)) {
     providers = normalizeProviders(file.providers)
   } else {
@@ -139,6 +205,10 @@ export function loadConfig(): GeoGuardConfig {
 /**
  * Writes the config, merging with an already existing file.
  * Fields not passed (timeoutMs/providers) are preserved.
+ *
+ * With `options.profile` the values land in `profiles.<name>` instead: the
+ * shared top level and the other profiles are left exactly as they were.
+ * The returned config is what the file now says for that profile (env ignored).
  */
 export function writeConfig(
   partial: {
@@ -146,26 +216,127 @@ export function writeConfig(
     timeoutMs?: number
     providers?: string[]
   } = {},
+  options: Readonly<{ profile?: ProfileName }> = {},
 ): { file: string; config: GeoGuardConfig } {
   const dir = configDir()
   fs.mkdirSync(dir, { recursive: true })
 
   const existing = readConfigFile()
+  const { profile } = options
 
-  const next: GeoGuardConfig = {
-    allowed:
-      partial.allowed !== undefined
-        ? parseAllowed(partial.allowed)
-        : parseAllowed(existing.allowed ?? DEFAULT_CONFIG.allowed),
-    timeoutMs:
-      partial.timeoutMs ??
-      (typeof existing.timeoutMs === 'number' ? existing.timeoutMs : DEFAULT_CONFIG.timeoutMs),
-    providers:
-      partial.providers ??
-      (Array.isArray(existing.providers) ? existing.providers : [...DEFAULT_CONFIG.providers]),
+  let next: GeoGuardConfigFile
+  if (profile) {
+    const section = existing.profiles?.[profile] ?? {}
+    const updated: GeoGuardProfileFile = { ...section }
+    if (partial.allowed !== undefined) updated.allowed = parseAllowed(partial.allowed)
+    if (partial.timeoutMs !== undefined) updated.timeoutMs = partial.timeoutMs
+    if (partial.providers !== undefined) updated.providers = partial.providers
+    next = { ...existing, profiles: { ...existing.profiles, [profile]: updated } }
+  } else {
+    next = {
+      ...existing,
+      allowed:
+        partial.allowed !== undefined
+          ? parseAllowed(partial.allowed)
+          : parseAllowed(existing.allowed ?? DEFAULT_CONFIG.allowed),
+      timeoutMs:
+        partial.timeoutMs ??
+        (typeof existing.timeoutMs === 'number' ? existing.timeoutMs : DEFAULT_CONFIG.timeoutMs),
+      providers:
+        partial.providers ??
+        (Array.isArray(existing.providers) ? existing.providers : [...DEFAULT_CONFIG.providers]),
+    }
   }
 
   const file = configPath()
   fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`)
-  return { file, config: next }
+  return { file, config: effectiveFromFile(next, profile) }
+}
+
+/** Removes a profile section. Returns false if there was nothing to remove. */
+export function removeProfile(profile: ProfileName): { file: string; removed: boolean } {
+  const file = configPath()
+  const existing = readConfigFile()
+  if (existing.profiles?.[profile] === undefined) return { file, removed: false }
+
+  const profiles = { ...existing.profiles }
+  delete profiles[profile]
+
+  const next: GeoGuardConfigFile = { ...existing }
+  if (Object.keys(profiles).length > 0) {
+    next.profiles = profiles
+  } else {
+    delete next.profiles
+  }
+
+  fs.mkdirSync(configDir(), { recursive: true })
+  fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`)
+  return { file, removed: true }
+}
+
+/** What the file alone says for a profile — the same layering as loadConfig, without env. */
+function effectiveFromFile(file: GeoGuardConfigFile, profile?: ProfileName): GeoGuardConfig {
+  const section = profileSection(file, profile)
+  const timeoutMs = Number(section?.timeoutMs ?? file.timeoutMs ?? DEFAULT_CONFIG.timeoutMs)
+
+  let providers: string[]
+  if (Array.isArray(section?.providers)) {
+    providers = normalizeProviders(section.providers)
+  } else if (Array.isArray(file.providers)) {
+    providers = normalizeProviders(file.providers)
+  } else {
+    providers = [...DEFAULT_CONFIG.providers]
+  }
+
+  return {
+    allowed: parseAllowed(section?.allowed ?? file.allowed ?? DEFAULT_CONFIG.allowed),
+    timeoutMs: Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : DEFAULT_CONFIG.timeoutMs,
+    providers,
+  }
+}
+
+/**
+ * The strictest policy configured: only countries every configured profile AND
+ * the shared level allow. Used when a hook host piped us something we could not
+ * identify — applying one tool's policy to another would be a guess, and
+ * guessing wrong in the permissive direction is the one outcome we never want.
+ */
+export function loadStrictestConfig(): GeoGuardConfig {
+  const shared = loadConfig()
+  const file = readConfigFile()
+
+  let allowed = shared.allowed
+  for (const profile of PROFILE_NAMES) {
+    if (file.profiles?.[profile] === undefined && !profileEnvSet(profile)) continue
+    const profileAllowed = loadConfig(profile).allowed
+    allowed = allowed.filter(code => profileAllowed.includes(code))
+  }
+
+  return { ...shared, allowed }
+}
+
+/** Whether any profile-scoped env var is set for this profile. */
+function profileEnvSet(profile: ProfileName): boolean {
+  return ENV_BASES.some(base => process.env[`${base}_${profile.toUpperCase()}`] !== undefined)
+}
+
+/**
+ * Validates a user-supplied country list: ISO alpha-2 only, and not empty.
+ * null keeps the historical meaning "not given" → the built-in default.
+ */
+export function validatedAllowed(countries: string | null): string[] {
+  const invalid = invalidCountryTokens(countries)
+  if (invalid.length > 0) {
+    throw new Error(msg().invalidCountryCodes(invalid.join(', ')))
+  }
+  const allowed = parseAllowed(countries)
+  if (allowed.length === 0) {
+    throw new Error(msg().emptyCountryList())
+  }
+  return allowed
+}
+
+/** Whether the file has an explicit section for this profile (for `geo-guard config`). */
+export function hasProfileSection(profile: ProfileName): boolean {
+  return readConfigFile().profiles?.[profile] !== undefined
 }

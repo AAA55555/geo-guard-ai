@@ -5,13 +5,19 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
-const { spawnSync } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 
 const {
   parseAllowed,
   parseTimeoutSeconds,
   writeConfig,
   loadConfig,
+  removeProfile,
+  loadStrictestConfig,
+  profilesConfigured,
+  hasProfileSection,
+  isProfileName,
+  PROFILE_NAMES,
   DEFAULT_CONFIG,
   BEGIN_MARKER,
   END_MARKER,
@@ -130,6 +136,182 @@ describe('writeConfig merge', () => {
     writeConfig({ allowed: ['PT'] })
     delete process.env.GEO_GUARD_ALLOWED
     assert.deepEqual(loadConfig().allowed, ['PT'])
+  })
+})
+
+describe('profiles', () => {
+  let tmpDir
+  let prevFile
+  let prevDir
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-profiles-'))
+    prevFile = process.env.GEO_GUARD_CONFIG_FILE
+    prevDir = process.env.GEO_GUARD_CONFIG_DIR
+    process.env.GEO_GUARD_CONFIG_DIR = tmpDir
+    process.env.GEO_GUARD_CONFIG_FILE = path.join(tmpDir, 'config.json')
+  })
+
+  after(() => {
+    if (prevFile === undefined) delete process.env.GEO_GUARD_CONFIG_FILE
+    else process.env.GEO_GUARD_CONFIG_FILE = prevFile
+    if (prevDir === undefined) delete process.env.GEO_GUARD_CONFIG_DIR
+    else process.env.GEO_GUARD_CONFIG_DIR = prevDir
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  const readFile = () => JSON.parse(fs.readFileSync(process.env.GEO_GUARD_CONFIG_FILE, 'utf8'))
+  /** Каждый тест стартует с чистого конфига: профили иначе протекают между тестами. */
+  const reset = () => {
+    const file = process.env.GEO_GUARD_CONFIG_FILE
+    if (fs.existsSync(file)) fs.unlinkSync(file)
+  }
+
+  test('a config without profiles behaves exactly as before', () => {
+    reset()
+    writeConfig({ allowed: ['NL'], timeoutMs: 5000, providers: ['https://a.test'] })
+    assert.equal(profilesConfigured(), false)
+    assert.deepEqual(loadConfig().allowed, ['NL'])
+    // просят профиль, а его нет — молча берётся общий уровень
+    assert.deepEqual(loadConfig('cursor').allowed, ['NL'])
+    assert.deepEqual(loadConfig('claude').allowed, ['NL'])
+    assert.equal(hasProfileSection('cursor'), false)
+  })
+
+  test('profile overrides only its own tool, shared level untouched', () => {
+    reset()
+    writeConfig({ allowed: ['NL', 'DE'], timeoutMs: 5000 })
+    writeConfig({ allowed: ['PL'] }, { profile: 'cursor' })
+
+    assert.deepEqual(loadConfig().allowed, ['NL', 'DE'])
+    assert.deepEqual(loadConfig('claude').allowed, ['NL', 'DE'])
+    assert.deepEqual(loadConfig('cursor').allowed, ['PL'])
+    assert.equal(profilesConfigured(), true)
+    assert.equal(hasProfileSection('cursor'), true)
+    assert.equal(hasProfileSection('claude'), false)
+
+    const raw = readFile()
+    assert.deepEqual(raw.allowed, ['NL', 'DE'])
+    assert.deepEqual(raw.profiles.cursor.allowed, ['PL'])
+  })
+
+  test('partial profile inherits the rest from the shared level', () => {
+    reset()
+    writeConfig({ allowed: ['NL'], timeoutMs: 8000, providers: ['https://shared.test'] })
+    writeConfig({ allowed: ['PL'] }, { profile: 'cursor' })
+
+    const cursor = loadConfig('cursor')
+    assert.deepEqual(cursor.allowed, ['PL'])
+    assert.equal(cursor.timeoutMs, 8000)
+    assert.deepEqual(cursor.providers, ['https://shared.test'])
+  })
+
+  test('a profile can override timeout and providers too', () => {
+    reset()
+    writeConfig({ allowed: ['NL'], timeoutMs: 8000, providers: ['https://shared.test'] })
+    writeConfig(
+      { allowed: ['PL'], timeoutMs: 2000, providers: ['https://cursor.test'] },
+      { profile: 'cursor' },
+    )
+
+    const cursor = loadConfig('cursor')
+    assert.equal(cursor.timeoutMs, 2000)
+    assert.deepEqual(cursor.providers, ['https://cursor.test'])
+    // общий уровень не поехал
+    assert.equal(loadConfig().timeoutMs, 8000)
+    assert.deepEqual(loadConfig().providers, ['https://shared.test'])
+  })
+
+  test('writing one profile keeps the other and the shared level', () => {
+    reset()
+    writeConfig({ allowed: ['NL'] })
+    writeConfig({ allowed: ['PL'] }, { profile: 'cursor' })
+    writeConfig({ allowed: ['ES'] }, { profile: 'claude' })
+    // повторная запись общего уровня не сносит профили
+    writeConfig({ allowed: ['FR'] })
+
+    assert.deepEqual(loadConfig().allowed, ['FR'])
+    assert.deepEqual(loadConfig('cursor').allowed, ['PL'])
+    assert.deepEqual(loadConfig('claude').allowed, ['ES'])
+  })
+
+  test('profile env beats shared env beats profile file beats shared file', () => {
+    reset()
+    writeConfig({ allowed: ['NL'] })
+    writeConfig({ allowed: ['PL'] }, { profile: 'cursor' })
+
+    // только файл
+    assert.deepEqual(loadConfig('cursor').allowed, ['PL'])
+
+    process.env.GEO_GUARD_ALLOWED = 'DE'
+    try {
+      // общий env перебивает профиль из файла
+      assert.deepEqual(loadConfig('cursor').allowed, ['DE'])
+      process.env.GEO_GUARD_ALLOWED_CURSOR = 'ES'
+      try {
+        // профильный env перебивает общий env
+        assert.deepEqual(loadConfig('cursor').allowed, ['ES'])
+        // и не задевает другой профиль
+        assert.deepEqual(loadConfig('claude').allowed, ['DE'])
+      } finally {
+        delete process.env.GEO_GUARD_ALLOWED_CURSOR
+      }
+    } finally {
+      delete process.env.GEO_GUARD_ALLOWED
+    }
+  })
+
+  test('empty GEO_GUARD_ALLOWED_CURSOR="" blocks cursor only (fail-closed)', () => {
+    reset()
+    writeConfig({ allowed: ['NL'] })
+    process.env.GEO_GUARD_ALLOWED_CURSOR = ''
+    try {
+      assert.deepEqual(loadConfig('cursor').allowed, [])
+      assert.deepEqual(loadConfig('claude').allowed, ['NL'])
+      assert.equal(profilesConfigured(), true)
+    } finally {
+      delete process.env.GEO_GUARD_ALLOWED_CURSOR
+    }
+  })
+
+  test('profile-only env counts as configured without a file section', () => {
+    reset()
+    writeConfig({ allowed: ['NL'] })
+    assert.equal(profilesConfigured(), false)
+    process.env.GEO_GUARD_TIMEOUT_CURSOR = '3'
+    try {
+      assert.equal(profilesConfigured(), true)
+      assert.equal(loadConfig('cursor').timeoutMs, 3000)
+      assert.equal(loadConfig('claude').timeoutMs, 5000)
+    } finally {
+      delete process.env.GEO_GUARD_TIMEOUT_CURSOR
+    }
+  })
+
+  test('removeProfile drops the section and the profiles key when last', () => {
+    reset()
+    writeConfig({ allowed: ['NL'] })
+    writeConfig({ allowed: ['PL'] }, { profile: 'cursor' })
+    writeConfig({ allowed: ['ES'] }, { profile: 'claude' })
+
+    assert.equal(removeProfile('cursor').removed, true)
+    assert.equal(readFile().profiles.cursor, undefined)
+    assert.deepEqual(readFile().profiles.claude.allowed, ['ES'])
+
+    assert.equal(removeProfile('claude').removed, true)
+    assert.equal(readFile().profiles, undefined)
+    assert.deepEqual(loadConfig('cursor').allowed, ['NL'])
+
+    assert.equal(removeProfile('cursor').removed, false)
+  })
+
+  test('isProfileName guards the public names', () => {
+    reset()
+    assert.deepEqual([...PROFILE_NAMES], ['claude', 'cursor'])
+    assert.equal(isProfileName('cursor'), true)
+    assert.equal(isProfileName('vscode'), false)
+    assert.equal(isProfileName(''), false)
+    assert.equal(isProfileName(undefined), false)
   })
 })
 
@@ -896,6 +1078,41 @@ describe('hook command invariant', () => {
     assert.equal(fromClaude(), shared())
     assert.equal(fromClaude(), 'geo-guard check')
   })
+
+  test('the command carries no profile flag — Cursor dedup depends on it', () => {
+    // Cursor импортирует хуки Claude Code и дедуплицирует их по ТОЧНОМУ совпадению
+    // строки команды. Если сюда просочится `--profile cursor`, дедуп сломается и в
+    // Cursor отработают оба хука, причём импортированный — с чужой политикой.
+    // Профиль определяется в рантайме по stdin-payload, см. src/hook-payload.ts.
+    const { hookCommand } = require('../dist/hook-shared')
+    assert.doesNotMatch(hookCommand(), /--profile/)
+  })
+
+  test('both config files get byte-identical commands', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-bytes-'))
+    const prevHome = process.env.HOME
+    const prevProfile = process.env.USERPROFILE
+    process.env.HOME = home
+    process.env.USERPROFILE = home
+    try {
+      const { installClaudeHook, settingsPath } = require('../dist/claude-hook')
+      const { installCursorHook, cursorHooksPath } = require('../dist/cursor-hook')
+      installClaudeHook()
+      installCursorHook()
+
+      const claude = JSON.parse(fs.readFileSync(settingsPath(), 'utf8'))
+      const cursor = JSON.parse(fs.readFileSync(cursorHooksPath(), 'utf8'))
+      const claudeCmd = claude.hooks.UserPromptSubmit[0].hooks[0].command
+      const cursorCmd = cursor.hooks.beforeSubmitPrompt[0].command
+      assert.equal(claudeCmd, cursorCmd)
+    } finally {
+      if (prevHome === undefined) delete process.env.HOME
+      else process.env.HOME = prevHome
+      if (prevProfile === undefined) delete process.env.USERPROFILE
+      else process.env.USERPROFILE = prevProfile
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  })
 })
 
 describe('detectCountry', () => {
@@ -1000,5 +1217,462 @@ describe('runCheck stdout contract', () => {
     const r = runCheckSubprocess('XX')
     assert.equal(r.status, 2)
     assert.equal(r.stdout, '')
+  })
+})
+
+describe('hook payload → profile', () => {
+  const { profileFromEvent } = require('../dist/hook-payload')
+
+  test('maps the hosts we know, case-insensitively', () => {
+    assert.equal(profileFromEvent('UserPromptSubmit'), 'claude')
+    assert.equal(profileFromEvent('userpromptsubmit'), 'claude')
+    assert.equal(profileFromEvent('beforeSubmitPrompt'), 'cursor')
+    assert.equal(profileFromEvent(' beforeSubmitPrompt '), 'cursor')
+  })
+
+  test('anything else means "unknown", never a throw', () => {
+    assert.equal(profileFromEvent('SessionStart'), null)
+    assert.equal(profileFromEvent(''), null)
+    assert.equal(profileFromEvent(undefined), null)
+    assert.equal(profileFromEvent(null), null)
+    assert.equal(profileFromEvent(42), null)
+    assert.equal(profileFromEvent({ toString: () => 'UserPromptSubmit' }), null)
+  })
+})
+
+describe('runCheck profile resolution', () => {
+  // Настоящий подпроцесс: stdin-payload читается только в реальном процессе.
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  const mockFetch = path.join(__dirname, 'fixtures', 'mock-fetch.cjs') // всегда 'RU'
+  let tmpDir
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-checkprofile-'))
+  })
+  after(() => fs.rmSync(tmpDir, { recursive: true, force: true }))
+
+  function writeCfg(cfg) {
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify(cfg))
+  }
+
+  function check(stdin, args = [], extraEnv = {}) {
+    return spawnSync(process.execPath, [cli, 'check', ...args], {
+      input: stdin,
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--require ${mockFetch}`,
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: path.join(tmpDir, 'config.json'),
+        GEO_GUARD_PROVIDERS: 'https://example.test/fake',
+        GEO_GUARD_LANG: 'en',
+        GEO_GUARD_ALLOWED: undefined,
+        ...extraEnv,
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  // Страна всегда RU: shared разрешает только NL, профиль cursor разрешает RU.
+  const SPLIT = { allowed: ['NL'], profiles: { cursor: { allowed: ['RU'] } } }
+
+  test('Claude payload uses the claude policy (here: shared) and blocks', () => {
+    writeCfg(SPLIT)
+    const r = check('{"hook_event_name":"UserPromptSubmit","prompt":"hi"}')
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /'claude' policy/)
+  })
+
+  test('Cursor payload uses the cursor profile and passes', () => {
+    writeCfg(SPLIT)
+    const r = check('{"hook_event_name":"beforeSubmitPrompt","prompt":"hi"}')
+    assert.equal(r.status, 0)
+    // контракт stdout не сломан чтением stdin
+    assert.equal(r.stdout, '{"continue":true}')
+  })
+
+  test('no payload / garbage payload falls back to the shared policy', () => {
+    writeCfg(SPLIT)
+    assert.equal(check('').status, 2)
+    assert.equal(check('not json at all').status, 2)
+    assert.equal(check('[1,2,3]').status, 2)
+    // и сообщение без имени профиля — политика общая
+    assert.doesNotMatch(check('').stderr, /policy'/)
+  })
+
+  test('--profile and GEO_GUARD_PROFILE win over the payload', () => {
+    writeCfg(SPLIT)
+    assert.equal(check('{"hook_event_name":"UserPromptSubmit"}', ['--profile', 'cursor']).status, 0)
+    assert.equal(check('{"hook_event_name":"UserPromptSubmit"}', ['--profile=cursor']).status, 0)
+    assert.equal(
+      check('{"hook_event_name":"beforeSubmitPrompt"}', [], { GEO_GUARD_PROFILE: 'claude' }).status,
+      2,
+    )
+  })
+
+  test('an unknown profile blocks instead of falling back', () => {
+    writeCfg(SPLIT)
+    const r = check('', ['--profile', 'vscode'])
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /Unknown profile/i)
+    assert.equal(check('', [], { GEO_GUARD_PROFILE: 'vscode' }).status, 2)
+  })
+
+  test('a config without profiles is unaffected by the payload', () => {
+    writeCfg({ allowed: ['RU'] })
+    assert.equal(check('{"hook_event_name":"UserPromptSubmit"}').status, 0)
+    assert.equal(check('{"hook_event_name":"beforeSubmitPrompt"}').status, 0)
+    writeCfg({ allowed: ['NL'] })
+    assert.equal(check('{"hook_event_name":"beforeSubmitPrompt"}').status, 2)
+  })
+
+  test('profile-specific env alone splits the two tools', () => {
+    writeCfg({ allowed: ['NL'] })
+    const r = check('{"hook_event_name":"beforeSubmitPrompt"}', [], {
+      GEO_GUARD_ALLOWED_CURSOR: 'RU',
+    })
+    assert.equal(r.status, 0)
+    const c = check('{"hook_event_name":"UserPromptSubmit"}', [], {
+      GEO_GUARD_ALLOWED_CURSOR: 'RU',
+    })
+    assert.equal(c.status, 2)
+  })
+})
+
+describe('geo-guard config command', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let tmpDir
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-configcmd-'))
+  })
+  after(() => fs.rmSync(tmpDir, { recursive: true, force: true }))
+
+  const cfgFile = () => path.join(tmpDir, 'config.json')
+  const readCfg = () => JSON.parse(fs.readFileSync(cfgFile(), 'utf8'))
+
+  function run(args) {
+    return spawnSync(process.execPath, [cli, 'config', ...args], {
+      env: {
+        ...process.env,
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: cfgFile(),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  test('sets the shared list, then a profile, then unsets it', () => {
+    assert.equal(run(['--countries', 'NL,DE']).status, 0)
+    assert.deepEqual(readCfg().allowed, ['NL', 'DE'])
+    assert.equal(readCfg().profiles, undefined)
+
+    assert.equal(run(['--countries', 'PL', '--profile', 'cursor']).status, 0)
+    assert.deepEqual(readCfg().allowed, ['NL', 'DE'])
+    assert.deepEqual(readCfg().profiles.cursor.allowed, ['PL'])
+
+    const shown = run([])
+    assert.match(shown.stdout, /shared\s+allowed: NL, DE/)
+    assert.match(shown.stdout, /cursor\s+allowed: PL\s+\(own profile\)/)
+    assert.match(shown.stdout, /claude\s+allowed: NL, DE\s+\(inherited\)/)
+
+    assert.equal(run(['--unset', '--profile', 'cursor']).status, 0)
+    assert.equal(readCfg().profiles, undefined)
+    assert.deepEqual(readCfg().allowed, ['NL', 'DE'])
+  })
+
+  test('never touches the rc file or the hook configs', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-confighome-'))
+    const rc = path.join(home, '.zshrc')
+    fs.writeFileSync(rc, 'alias claude="geo-guard claude --my-flag"\n')
+    const before = fs.readFileSync(rc, 'utf8')
+
+    const r = spawnSync(process.execPath, [cli, 'config', '--countries', 'ES'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: rc,
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: cfgFile(),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(r.status, 0)
+    assert.equal(fs.readFileSync(rc, 'utf8'), before)
+    assert.equal(fs.existsSync(path.join(home, '.claude', 'settings.json')), false)
+    assert.equal(fs.existsSync(path.join(home, '.cursor', 'hooks.json')), false)
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  test('rejects bad input without writing anything', () => {
+    run(['--countries', 'NL'])
+    const before = fs.readFileSync(cfgFile(), 'utf8')
+
+    for (const args of [
+      ['--countries', 'SPAIN'],
+      ['--profile', 'vscode'],
+      ['--unset'],
+      ['--unset', '--profile', 'cursor', '--countries', 'PL'],
+      ['--bogus'],
+    ]) {
+      const r = run(args)
+      assert.notEqual(r.status, 0, `expected failure for ${args.join(' ')}`)
+    }
+
+    assert.equal(fs.readFileSync(cfgFile(), 'utf8'), before)
+  })
+})
+
+describe('readHookPayload resilience', () => {
+  // Регрессии на дефекты, найденные тестером: payload выбрасывался по таймауту
+  // и при превышении лимита размера.
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  const mockFetch = path.join(__dirname, 'fixtures', 'mock-fetch.cjs') // страна всегда RU
+  let tmpDir
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-payload-'))
+    // claude разрешает RU (пропуск), cursor — DE (блок), общий — NL (блок).
+    fs.writeFileSync(
+      path.join(tmpDir, 'config.json'),
+      JSON.stringify({
+        allowed: ['NL'],
+        profiles: { claude: { allowed: ['RU'] }, cursor: { allowed: ['DE'] } },
+      }),
+    )
+  })
+  after(() => fs.rmSync(tmpDir, { recursive: true, force: true }))
+
+  /** Запускает check и даёт тесту самому управлять stdin. */
+  function check(write) {
+    return new Promise(resolve => {
+      const child = spawn(process.execPath, [cli, 'check'], {
+        env: {
+          ...process.env,
+          NODE_OPTIONS: `--require ${mockFetch}`,
+          GEO_GUARD_CONFIG_DIR: tmpDir,
+          GEO_GUARD_CONFIG_FILE: path.join(tmpDir, 'config.json'),
+          GEO_GUARD_PROVIDERS: 'https://example.test/fake',
+          GEO_GUARD_LANG: 'en',
+          GEO_GUARD_ALLOWED: undefined,
+          GEO_GUARD_PROFILE: undefined,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+      })
+      let stdout = ''
+      child.stdout.on('data', d => (stdout += d))
+      write(child.stdin)
+      child.on('exit', code => resolve({ code, stdout }))
+    })
+  }
+
+  test('payload is honored even if the host never closes stdin', async () => {
+    const r = await check(stdin => stdin.write('{"hook_event_name":"UserPromptSubmit"}'))
+    assert.equal(r.code, 0) // профиль claude разрешает RU
+  })
+
+  test('payload split across chunks slower than the old 300ms still counts', async () => {
+    const r = await check(stdin => {
+      stdin.write('{"hook_event_name":"UserPrompt')
+      setTimeout(() => stdin.end('Submit"}'), 400)
+    })
+    assert.equal(r.code, 0)
+  })
+
+  test('a payload past the size cap still yields the profile', async () => {
+    const huge = JSON.stringify({
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'x'.repeat(2 * 1024 * 1024),
+    })
+    const r = await check(stdin => stdin.end(huge))
+    assert.equal(r.code, 0)
+  })
+
+  test('an unidentified host falls back to the strictest policy, not the shared one', async () => {
+    // NL ∩ RU ∩ DE = ∅ → блок. Раньше молча применялся общий список.
+    const r = await check(stdin => stdin.end('{"hook_event_name":"SomeFutureEvent"}'))
+    assert.equal(r.code, 2)
+    assert.equal(r.stdout, '')
+  })
+
+  test('garbage from a host is unidentified too, not "no host"', async () => {
+    const r = await check(stdin => stdin.end('not json at all'))
+    assert.equal(r.code, 2)
+  })
+
+  test('empty stdin means a manual run → shared policy', async () => {
+    // Общий список NL, страна RU → блок, но по ОБЩЕЙ политике, без профиля в тексте.
+    const r = await check(stdin => stdin.end(''))
+    assert.equal(r.code, 2)
+  })
+
+  test('an unknown argument blocks instead of being ignored', async () => {
+    const r = spawnSync(process.execPath, [cli, 'check', '--porfile', 'cursor'], {
+      input: '',
+      env: {
+        ...process.env,
+        NODE_OPTIONS: `--require ${mockFetch}`,
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: path.join(tmpDir, 'config.json'),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+    assert.equal(r.status, 2)
+    assert.match(r.stderr, /Unknown check argument/)
+  })
+})
+
+describe('loadStrictestConfig', () => {
+  let tmpDir
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-strict-'))
+    process.env.GEO_GUARD_CONFIG_DIR = tmpDir
+    process.env.GEO_GUARD_CONFIG_FILE = path.join(tmpDir, 'config.json')
+  })
+  after(() => {
+    delete process.env.GEO_GUARD_CONFIG_DIR
+    delete process.env.GEO_GUARD_CONFIG_FILE
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('intersects the shared list with every configured profile', () => {
+    writeConfig({ allowed: ['NL', 'DE', 'PL'] })
+    writeConfig({ allowed: ['NL', 'DE'] }, { profile: 'claude' })
+    writeConfig({ allowed: ['DE', 'PL'] }, { profile: 'cursor' })
+    assert.deepEqual(loadStrictestConfig().allowed, ['DE'])
+  })
+
+  test('with no profiles it is just the shared list', () => {
+    fs.unlinkSync(process.env.GEO_GUARD_CONFIG_FILE)
+    writeConfig({ allowed: ['NL', 'DE'] })
+    assert.deepEqual(loadStrictestConfig().allowed, ['NL', 'DE'])
+  })
+
+  test('disjoint policies mean nothing is allowed', () => {
+    fs.unlinkSync(process.env.GEO_GUARD_CONFIG_FILE)
+    writeConfig({ allowed: ['NL'] })
+    writeConfig({ allowed: ['PL'] }, { profile: 'cursor' })
+    assert.deepEqual(loadStrictestConfig().allowed, [])
+  })
+})
+
+describe('setup keeps an existing country list', () => {
+  const cli = path.join(__dirname, '..', 'dist', 'cli.js')
+  let tmpDir
+  let home
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-setupkeep-'))
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-setupkeep-home-'))
+  })
+  after(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
+  const cfgFile = () => path.join(tmpDir, 'config.json')
+
+  function setup(args) {
+    return spawnSync(process.execPath, [cli, 'setup', ...args], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: path.join(home, '.zshrc'),
+        GEO_GUARD_SHELL: 'zsh',
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: cfgFile(),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+  }
+
+  test('a profile-only run does not reset the shared list', () => {
+    fs.writeFileSync(cfgFile(), JSON.stringify({ allowed: ['NL', 'DE'], timeoutMs: 9000 }))
+
+    const r = setup(['--yes', '--no-hook', '--no-cursor', '--no-alias', '--cursor-countries', 'PL'])
+    assert.equal(r.status, 0)
+
+    const cfg = JSON.parse(fs.readFileSync(cfgFile(), 'utf8'))
+    assert.deepEqual(cfg.allowed, ['NL', 'DE']) // раньше молча становилось ['NL']
+    assert.equal(cfg.timeoutMs, 9000)
+    assert.deepEqual(cfg.profiles.cursor.allowed, ['PL'])
+  })
+
+  test('an option without a value is rejected, not silently swallowed', () => {
+    const r = setup(['--yes', '--no-hook', '--no-cursor', '--no-alias', '--countries'])
+    assert.notEqual(r.status, 0)
+    assert.match(r.stderr + r.stdout, /needs a value/i)
+  })
+
+  test('an invalid profile list aborts before the shared list is written', () => {
+    fs.writeFileSync(cfgFile(), JSON.stringify({ allowed: ['NL', 'DE'] }))
+    const before = fs.readFileSync(cfgFile(), 'utf8')
+
+    const r = setup([
+      '--yes', '--no-hook', '--no-cursor', '--no-alias',
+      '--countries', 'ES', '--cursor-countries', 'SPAIN',
+    ])
+    assert.notEqual(r.status, 0)
+    assert.equal(fs.readFileSync(cfgFile(), 'utf8'), before)
+  })
+})
+
+describe('installAlias with a broken END marker', () => {
+  let tmpDir
+  let rcFile
+  let prevRc
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-broken-'))
+    rcFile = path.join(tmpDir, '.zshrc')
+    prevRc = process.env.GEO_GUARD_RC
+    process.env.GEO_GUARD_RC = rcFile
+  })
+  after(() => {
+    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
+    else process.env.GEO_GUARD_RC = prevRc
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('a custom body is preserved even without the END marker', () => {
+    // Раньше защита обходилась: в rc оказывались ДВЕ строки alias claude=,
+    // и наша дефолтная шла последней — в zsh побеждает она.
+    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude --my-flag"\nexport WORK=1\n`
+    fs.writeFileSync(rcFile, broken)
+
+    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+
+    assert.equal(res.preserved, 'custom')
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
+  })
+
+  test('a pristine body without END is still repaired', () => {
+    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\nexport IMPORTANT=1\n`
+    fs.writeFileSync(rcFile, broken)
+
+    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+
+    assert.equal(res.preserved, null)
+    const after = fs.readFileSync(rcFile, 'utf8')
+    assert.equal((after.match(/geo-guard-ai begin/g) || []).length, 1)
+    assert.equal((after.match(/^alias claude=/gm) || []).length, 1)
+    assert.match(after, /export IMPORTANT=1/)
+  })
+
+  test('foreign content without END is preserved', () => {
+    const broken = `${BEGIN_MARKER}\nexport SECRET=1\n`
+    fs.writeFileSync(rcFile, broken)
+
+    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+
+    assert.equal(res.preserved, 'foreign')
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
   })
 })
