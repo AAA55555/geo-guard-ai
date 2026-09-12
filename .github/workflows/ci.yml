@@ -67,15 +67,12 @@ jobs:
       # The files are listed explicitly instead, so this behaves the same on
       # every Node in the matrix. (dist/ is already built by the step above.)
       #
-      # Advisory for the first rollout only. The suite reads as portable — temp
-      # dirs via os.tmpdir(), paths via path.join(), USERPROFILE set alongside
-      # HOME everywhere — and the one case that was definitely POSIX-only
-      # (GEO_GUARD_REAL_BIN=/bin/echo) now spawns process.execPath instead. What
-      # is left is unverified rather than known-broken: nobody has run this
-      # suite on Windows yet. Drop continue-on-error after the first green run,
-      # and treat anything it turns up as a bug in the tests or the win32 path.
-      - name: Unit suite (advisory on Windows)
-        continue-on-error: true
+      # The suite turned out to be portable as written — temp dirs via
+      # os.tmpdir(), paths via path.join(), USERPROFILE set alongside HOME
+      # everywhere — and it passed here on the first green run, so it blocks like
+      # everything else. It has already earned its place: this job is what caught
+      # spawn refusing to launch a .cmd.
+      - name: Unit suite
         run: |
           $files = Get-ChildItem -Path test -Filter *.test.cjs | ForEach-Object { $_.FullName }
           node --test @files
