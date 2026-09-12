@@ -420,3 +420,53 @@ describe('installAlias with a broken END marker', () => {
     assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
   })
 })
+
+describe('--force-alias does not extend to foreign content', () => {
+  let tmpDir
+  let rcFile
+  let prevRc
+
+  before(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-force-'))
+    rcFile = path.join(tmpDir, '.zshrc')
+    prevRc = process.env.GEO_GUARD_RC
+    process.env.GEO_GUARD_RC = rcFile
+  })
+  after(() => {
+    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
+    else process.env.GEO_GUARD_RC = prevRc
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+  })
+
+  test('overwrites our own edited alias', () => {
+    fs.writeFileSync(
+      rcFile,
+      `${BEGIN_MARKER}\nalias claude="geo-guard claude --mine"\n${END_MARKER}\n`,
+    )
+
+    const res = installAlias('zsh', {
+      name: 'claude',
+      skipConflictCheck: true,
+      overwriteCustom: true,
+    })
+
+    assert.equal(res.preserved, null)
+    assert.match(fs.readFileSync(rcFile, 'utf8'), /alias claude="geo-guard claude"/)
+  })
+
+  test('still refuses to delete content that is not ours', () => {
+    // There is no backup of an rc file, and "overwrite the alias I edited" is
+    // not consent to delete whatever else lives between those markers.
+    const foreign = `${BEGIN_MARKER}\nexport MY_IMPORTANT=1\n${END_MARKER}\n`
+    fs.writeFileSync(rcFile, foreign)
+
+    const res = installAlias('zsh', {
+      name: 'claude',
+      skipConflictCheck: true,
+      overwriteCustom: true,
+    })
+
+    assert.equal(res.preserved, 'foreign')
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), foreign)
+  })
+})

@@ -85,7 +85,9 @@ export async function runUninstall(argv: string[] = []): Promise<void> {
     for (const a of aliases) {
       log(quiet, msg().aliasRemoved(a.file))
     }
-  } else {
+  } else if (keptModified.length === 0) {
+    // Only when there is genuinely nothing: saying "no blocks found" and then
+    // "a block was left as is" in the next breath contradicts itself.
     log(quiet, msg().aliasBlocksNotFound())
   }
   for (const a of keptModified) {

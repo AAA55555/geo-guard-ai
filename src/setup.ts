@@ -97,7 +97,13 @@ function reportPreservedAlias(alias: InstallAliasResult, requestedName: string):
   for (const line of (alias.existingBody ?? '').split('\n')) {
     console.log(`   ${line}`)
   }
-  console.log(msg().aliasForceHint())
+  // --force-alias replaces an alias of ours; it does not delete foreign
+  // content, so offering it there would be advice we refuse to carry out.
+  if (alias.preserved === 'custom') {
+    console.log(msg().aliasForceHint())
+  } else {
+    console.log(msg().aliasFixByHand())
+  }
   if (alias.preserved === 'custom' && alias.name !== requestedName) {
     console.log(msg().aliasNameChangeSkipped(alias.name, requestedName))
   }
