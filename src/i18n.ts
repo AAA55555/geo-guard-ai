@@ -35,6 +35,8 @@ export type Messages = {
   unknownConfigArg: (arg: string) => string
   configUnsetNeedsProfile: (list: string) => string
   configUnsetWithCountries: () => string
+  configResetWithCountries: () => string
+  configResetDone: (file: string) => string
   configProfileUnset: (profile: string) => string
   configProfileNotSet: (profile: string) => string
   configLineShared: (allowed: string, timeoutSeconds: number) => string
@@ -145,6 +147,8 @@ config options:
   -c, --countries ES,PT     set the countries
   -p, --profile claude|cursor   apply to that tool only
   --unset --profile cursor  drop the profile, back to the shared list
+  --reset                   back to the defaults, drops every profile
+  --reset --profile cursor  same as --unset --profile cursor
 
 uninstall options:
   --keep-config             don't delete config.json
@@ -174,6 +178,8 @@ Examples:
   unknownConfigArg: arg => `Unknown config argument: ${arg}`,
   configUnsetNeedsProfile: list => `--unset needs a profile: --profile <${list}>`,
   configUnsetWithCountries: () => '--unset and --countries cannot be combined',
+  configResetWithCountries: () => '--reset and --countries cannot be combined',
+  configResetDone: file => `✅ config back to defaults: ${file}`,
   configProfileUnset: profile => `✅ profile '${profile}' removed — it inherits the shared list now`,
   configProfileNotSet: profile => `⏭  profile '${profile}' had no settings of its own`,
   configLineShared: (allowed, timeoutSeconds) =>
@@ -293,6 +299,8 @@ config options:
   -c, --countries ES,PT     задать страны
   -p, --profile claude|cursor   применить только к этому инструменту
   --unset --profile cursor  убрать профиль, вернуться к общему списку
+  --reset                   вернуть дефолты, удалить все профили
+  --reset --profile cursor  то же, что --unset --profile cursor
 
 uninstall options:
   --keep-config             не удалять config.json
@@ -322,6 +330,8 @@ uninstall options:
   unknownConfigArg: arg => `Неизвестный аргумент config: ${arg}`,
   configUnsetNeedsProfile: list => `--unset требует профиль: --profile <${list}>`,
   configUnsetWithCountries: () => '--unset и --countries нельзя вместе',
+  configResetWithCountries: () => '--reset и --countries нельзя вместе',
+  configResetDone: file => `✅ конфиг сброшен к дефолтам: ${file}`,
   configProfileUnset: profile => `✅ профиль '${profile}' удалён — теперь наследует общий список`,
   configProfileNotSet: profile => `⏭  у профиля '${profile}' не было своих настроек`,
   configLineShared: (allowed, timeoutSeconds) =>

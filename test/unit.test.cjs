@@ -1407,6 +1407,69 @@ describe('geo-guard config command', () => {
     fs.rmSync(home, { recursive: true, force: true })
   })
 
+  test('--reset returns the whole config to the defaults and drops the profiles', () => {
+    fs.writeFileSync(
+      cfgFile(),
+      JSON.stringify({
+        allowed: ['ES', 'PT'],
+        timeoutMs: 12000,
+        providers: ['https://example.test/country'],
+        profiles: { cursor: { allowed: ['PL'] }, claude: { allowed: ['DE'] } },
+      }),
+    )
+
+    const r = run(['--reset'])
+    assert.equal(r.status, 0)
+    assert.match(r.stdout, /back to defaults/)
+    assert.match(r.stdout, /shared\s+allowed: NL\s+timeout: 5s/)
+
+    const cfg = readCfg()
+    assert.deepEqual(cfg.allowed, ['NL'])
+    assert.equal(cfg.timeoutMs, 5000)
+    assert.deepEqual(cfg.providers, [
+      'https://ifconfig.co/country-iso',
+      'https://ipinfo.io/country',
+    ])
+    assert.equal(cfg.profiles, undefined)
+  })
+
+  test('--reset --profile drops only that profile, like --unset', () => {
+    assert.equal(run(['--countries', 'NL,DE']).status, 0)
+    assert.equal(run(['--countries', 'PL', '--profile', 'cursor']).status, 0)
+    assert.equal(run(['--countries', 'ES', '--profile', 'claude']).status, 0)
+
+    assert.equal(run(['--reset', '--profile', 'cursor']).status, 0)
+    assert.equal(readCfg().profiles.cursor, undefined)
+    assert.deepEqual(readCfg().profiles.claude.allowed, ['ES'])
+    assert.deepEqual(readCfg().allowed, ['NL', 'DE'])
+  })
+
+  test('--reset never touches the rc file or the hook configs', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-resethome-'))
+    const rc = path.join(home, '.zshrc')
+    fs.writeFileSync(rc, 'alias claude="geo-guard claude --my-flag"\n')
+    const before = fs.readFileSync(rc, 'utf8')
+
+    const r = spawnSync(process.execPath, [cli, 'config', '--reset'], {
+      env: {
+        ...process.env,
+        HOME: home,
+        USERPROFILE: home,
+        GEO_GUARD_RC: rc,
+        GEO_GUARD_CONFIG_DIR: tmpDir,
+        GEO_GUARD_CONFIG_FILE: cfgFile(),
+        GEO_GUARD_LANG: 'en',
+      },
+      encoding: 'utf8',
+    })
+
+    assert.equal(r.status, 0)
+    assert.equal(fs.readFileSync(rc, 'utf8'), before)
+    assert.equal(fs.existsSync(path.join(home, '.claude', 'settings.json')), false)
+    assert.equal(fs.existsSync(path.join(home, '.cursor', 'hooks.json')), false)
+    fs.rmSync(home, { recursive: true, force: true })
+  })
+
   test('rejects bad input without writing anything', () => {
     run(['--countries', 'NL'])
     const before = fs.readFileSync(cfgFile(), 'utf8')
@@ -1416,6 +1479,8 @@ describe('geo-guard config command', () => {
       ['--profile', 'vscode'],
       ['--unset'],
       ['--unset', '--profile', 'cursor', '--countries', 'PL'],
+      ['--reset', '--countries', 'PL'],
+      ['--reset', '--profile', 'cursor', '--countries', 'PL'],
       ['--bogus'],
     ]) {
       const r = run(args)
