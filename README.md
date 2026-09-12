@@ -117,6 +117,26 @@ geo-guard setup --alias-name cc      # run Claude Code via `cc`
 
 Other people's aliases like `cc` / `c`, if already taken by something other than us, aren't overwritten either — the next free name is used.
 
+**If you added your own flags to our alias** — e.g.
+
+```bash
+# >>> geo-guard-ai begin >>>
+alias claude="geo-guard claude --dangerously-skip-permissions"
+# <<< geo-guard-ai end <<<
+```
+
+— re-running `geo-guard setup` (to change countries, say) **won't overwrite it**. The rc file isn't touched at all; setup says so and moves on. Only a block that is byte-for-byte what we generate gets regenerated, so package updates can still change the snippet format.
+
+The same goes for foreign content someone put between our markers: left as is, with a warning.
+
+To go back to the default alias, ask for it explicitly:
+
+```bash
+geo-guard setup --force-alias
+```
+
+Your own `timeout` / `statusMessage` / `failClosed` in the hook entries (`~/.claude/settings.json`, `~/.cursor/hooks.json`) survive a re-run the same way — only the `command` is ours to rewrite.
+
 ### Shells
 
 Auto-detected from `$SHELL` (PowerShell on Windows). Supported: **zsh, bash, fish, powershell**.
@@ -186,6 +206,7 @@ geo-guard --help
 | `-c, --countries ES,PT` | allowed countries |
 | `--shell zsh\|bash\|fish\|powershell` | target shell for the alias |
 | `--alias-name cc` | alias name (default `claude`; on collision it suggests another) |
+| `--force-alias` | overwrite an alias block you edited by hand (default: keep it) |
 | `--hook` / `--no-hook` | install / skip the Claude Code hook |
 | `--cursor` / `--no-cursor` | install / skip the Cursor hook (default: install if `~/.cursor` exists) |
 | `--alias` / `--no-alias` | install / skip the alias |
@@ -247,7 +268,7 @@ Safety on uninstall:
 
 - **other people's aliases** (`cc` / `c` / your own `claude`) aren't touched;
 - by default all known rc files are scanned (`~/.zshrc`, `~/.bashrc`, …). If `GEO_GUARD_RC` is set — only that one: system rc files are neither read nor written in that case;
-- if our alias marker block was **edited by hand** (something other than what we wrote inside the markers) — it's **left as is**; uninstall doesn't remove it but warns instead. You never know what important thing was added there;
+- our marker block is removed even if you added your own flags to the alias inside it (`geo-guard claude --dangerously-skip-permissions` is still our alias). But if the markers hold something **foreign** — not a `geo-guard` alias at all — the block is **left as is**; uninstall doesn't remove it but warns instead. You never know what important thing was added there;
 - our hook entries in both `settings.json` and `hooks.json` are removed **by matching the command string**, the same way in both files — even if you'd hand-edited `timeout` or added a flag, it's still recognized and removed; the automatic `.bak` is your safety net if that's not what you wanted;
 - the rest of `settings.json` / `hooks.json` and both `.bak` files aren't touched.
 

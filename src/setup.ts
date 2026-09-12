@@ -16,6 +16,7 @@ import {
   detectShell,
   installAlias,
   listSupportedShells,
+  type InstallAliasResult,
   normalizeShellName,
   DEFAULT_ALIAS_NAME,
   type ShellName,
@@ -30,6 +31,7 @@ export type SetupOptions = Readonly<{
   hook: boolean | null
   alias: boolean | null
   aliasName: string | null
+  forceAlias: boolean
   cursor: boolean | null
 }>
 
@@ -79,6 +81,22 @@ async function resolveAliasNameInteractive(
   return name
 }
 
+/** Reports an alias block we deliberately left alone (custom flags or foreign content). */
+function reportPreservedAlias(alias: InstallAliasResult, requestedName: string): void {
+  if (alias.preserved === 'custom') {
+    console.log(msg().aliasKeptCustom(alias.file))
+  } else {
+    console.log(msg().aliasKeptForeign(alias.file))
+  }
+  for (const line of (alias.existingBody ?? '').split('\n')) {
+    console.log(`   ${line}`)
+  }
+  console.log(msg().aliasForceHint())
+  if (alias.preserved === 'custom' && alias.name !== requestedName) {
+    console.log(msg().aliasNameChangeSkipped(alias.name, requestedName))
+  }
+}
+
 export function parseArgs(argv: string[]): SetupOptions {
   const opts: {
     yes: boolean
@@ -87,6 +105,7 @@ export function parseArgs(argv: string[]): SetupOptions {
     hook: boolean | null
     alias: boolean | null
     aliasName: string | null
+    forceAlias: boolean
     cursor: boolean | null
   } = {
     yes: false,
@@ -95,6 +114,7 @@ export function parseArgs(argv: string[]): SetupOptions {
     hook: null,
     alias: null,
     aliasName: null,
+    forceAlias: false,
     cursor: null,
   }
 
@@ -116,6 +136,8 @@ export function parseArgs(argv: string[]): SetupOptions {
       opts.aliasName = argv[++i] ?? null
     } else if (arg.startsWith('--alias-name=')) {
       opts.aliasName = arg.slice('--alias-name='.length)
+    } else if (arg === '--force-alias') {
+      opts.forceAlias = true
     } else if (arg === '--no-hook') {
       opts.hook = false
     } else if (arg === '--hook') {
@@ -239,6 +261,7 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     const hook = installClaudeHook()
     console.log(msg().hookInstalled(hook.file))
     console.log(msg().hookCommandLine(hook.command))
+    if (hook.kept) console.log(msg().hookCustomKept())
   } else {
     console.log(msg().hookSkipped())
   }
@@ -247,23 +270,33 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     const cursorHook = installCursorHook()
     console.log(msg().cursorHookInstalled(cursorHook.file))
     console.log(msg().hookCommandLine(cursorHook.command))
+    if (cursorHook.kept) console.log(msg().hookCustomKept())
   } else {
     console.log(msg().cursorHookSkipped())
   }
 
   if (wantAlias) {
-    // The name was already checked for a collision above → force, to avoid throwing again.
-    const alias = installAlias(shell, { name: aliasName, force: true })
-    console.log(msg().aliasInstalled(alias.file))
-    console.log(`   ${alias.snippet.split('\n')[1] || alias.snippet}`)
-    if (alias.name !== DEFAULT_ALIAS_NAME) {
-      console.log(msg().aliasClaudeTaken(alias.name))
-      console.log(msg().aliasRunVia(alias.name))
-    }
-    console.log('')
-    console.log(msg().reloadRc(alias.file))
-    if (shell === 'bash' && process.platform === 'darwin') {
-      console.log(msg().macosBashProfileHint())
+    // The name was already checked for a collision above → skipConflictCheck,
+    // to avoid throwing again. overwriteCustom only on an explicit --force-alias.
+    const alias = installAlias(shell, {
+      name: aliasName,
+      skipConflictCheck: true,
+      overwriteCustom: opts.forceAlias,
+    })
+    if (alias.preserved) {
+      reportPreservedAlias(alias, aliasName)
+    } else {
+      console.log(msg().aliasInstalled(alias.file))
+      console.log(`   ${alias.snippet.split('\n')[1] || alias.snippet}`)
+      if (alias.name !== DEFAULT_ALIAS_NAME) {
+        console.log(msg().aliasClaudeTaken(alias.name))
+        console.log(msg().aliasRunVia(alias.name))
+      }
+      console.log('')
+      console.log(msg().reloadRc(alias.file))
+      if (shell === 'bash' && process.platform === 'darwin') {
+        console.log(msg().macosBashProfileHint())
+      }
     }
   } else if (aliasSkipReason) {
     console.log(msg().aliasSkippedReason(aliasSkipReason))

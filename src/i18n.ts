@@ -49,6 +49,11 @@ export type Messages = {
   cursorHookInstalled: (file: string) => string
   cursorHookSkipped: () => string
   aliasInstalled: (file: string) => string
+  aliasKeptCustom: (file: string) => string
+  aliasKeptForeign: (file: string) => string
+  aliasForceHint: () => string
+  aliasNameChangeSkipped: (kept: string, requested: string) => string
+  hookCustomKept: () => string
   aliasClaudeTaken: (name: string) => string
   aliasRunVia: (name: string) => string
   reloadRc: (file: string) => string
@@ -113,6 +118,7 @@ setup options:
   --cursor / --no-cursor    install the Cursor hook (~/.cursor/hooks.json)
   --alias / --no-alias
   --alias-name cc           alias name (default claude; on collision suggests another)
+  --force-alias             overwrite an alias block you edited by hand
 
 uninstall options:
   --keep-config             don't delete config.json
@@ -153,6 +159,12 @@ Examples:
   cursorHookInstalled: file => `✅ Cursor hook → ${file}`,
   cursorHookSkipped: () => '⏭  Cursor hook skipped',
   aliasInstalled: file => `✅ alias → ${file}`,
+  aliasKeptCustom: file => `⏭  alias in ${file} has your own flags — left untouched:`,
+  aliasKeptForeign: file => `⚠️  the geo-guard block in ${file} holds foreign content — left untouched:`,
+  aliasForceHint: () => '   Overwrite with the default alias: geo-guard setup --force-alias',
+  aliasNameChangeSkipped: (kept, requested) =>
+    `   Kept the existing name '${kept}', did not switch to '${requested}' — use --force-alias to rename.`,
+  hookCustomKept: () => '   your own hook settings (timeout etc.) were kept',
   aliasClaudeTaken: name => `   'claude' was taken by your own alias — using '${name}'.`,
   aliasRunVia: name => `   Run Claude Code via: ${name} …`,
   reloadRc: file => `Reload your rc: source ${file}`,
@@ -222,6 +234,7 @@ setup options:
   --cursor / --no-cursor    установить hook Cursor (~/.cursor/hooks.json)
   --alias / --no-alias
   --alias-name cc           имя alias (дефолт claude; при коллизии предложит другое)
+  --force-alias             перезаписать alias-блок, который правил вручную
 
 uninstall options:
   --keep-config             не удалять config.json
@@ -262,6 +275,12 @@ uninstall options:
   cursorHookInstalled: file => `✅ Cursor hook → ${file}`,
   cursorHookSkipped: () => '⏭  Cursor hook пропущен',
   aliasInstalled: file => `✅ alias → ${file}`,
+  aliasKeptCustom: file => `⏭  в ${file} alias с твоими флагами — не трогаем:`,
+  aliasKeptForeign: file => `⚠️  в ${file} внутри наших маркеров чужое содержимое — не трогаем:`,
+  aliasForceHint: () => '   Перезаписать дефолтным alias: geo-guard setup --force-alias',
+  aliasNameChangeSkipped: (kept, requested) =>
+    `   Оставили имя '${kept}', не меняли на '${requested}' — для переименования: --force-alias.`,
+  hookCustomKept: () => '   твои настройки хука (timeout и т.п.) сохранены',
   aliasClaudeTaken: name => `   'claude' был занят твоим alias — используем '${name}'.`,
   aliasRunVia: name => `   Запускай Claude Code через: ${name} …`,
   reloadRc: file => `Перечитай rc: source ${file}`,
