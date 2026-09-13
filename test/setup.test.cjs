@@ -8,6 +8,18 @@ const os = require('node:os')
 const path = require('node:path')
 
 
+// On Windows the shim is `claude.cmd`, and its body is a batch file rather than
+// a shell script. Asserting the POSIX spelling made the whole Windows suite red
+// while the code was right — the CI job caught it on the first push.
+const isWindows = process.platform === 'win32'
+const shimFile = name => (isWindows ? `${name}.cmd` : name)
+/** The line that runs the wrapped command, in whichever form this platform writes. */
+const runsLine = (command, flags = '') => {
+  const tail = flags ? ` ${flags}` : ''
+  if (isWindows) return new RegExp(`call "%GG%" ${command}${tail} %\\*`)
+  return new RegExp(`exec "\\$GG" ${command}${tail} "\\$@"`)
+}
+
 describe('setup rejects invalid country codes', () => {
   const { parseArgs } = require('../dist/setup')
   const cli = path.join(__dirname, '..', 'dist', 'cli.js')
@@ -157,7 +169,7 @@ describe('interactive setup driven from a pipe', () => {
     const rc = fs.readFileSync(path.join(home, '.zshrc'), 'utf8')
     assert.match(rc, /geo-guard-ai path begin/)
     assert.match(rc, /shim-bin/)
-    assert.equal(fs.existsSync(path.join(home, 'shim-bin', 'claude')), true)
+    assert.equal(fs.existsSync(path.join(home, 'shim-bin', shimFile('claude'))), true)
   })
 
   test('pressing Enter through every question takes the defaults', () => {
@@ -201,7 +213,7 @@ describe('setup installs the launch gate', () => {
   const rc = () => path.join(home, '.zshrc')
   const rcText = () => (fs.existsSync(rc()) ? fs.readFileSync(rc(), 'utf8') : '')
   const shimDir = () => path.join(home, 'shim-bin')
-  const shim = name => path.join(shimDir(), name)
+  const shim = name => path.join(shimDir(), shimFile(name))
   const shimText = name => (fs.existsSync(shim(name)) ? fs.readFileSync(shim(name), 'utf8') : '')
 
   function setup(extra = []) {
@@ -231,7 +243,7 @@ describe('setup installs the launch gate', () => {
 
     assert.equal(r.status, 0, r.stderr)
     assert.match(shimText('claude'), /geo-guard-ai shim v1: claude/)
-    assert.match(shimText('claude'), /exec "\$GG" claude "\$@"/)
+    assert.match(shimText('claude'), runsLine('claude'))
     assert.match(rcText(), /geo-guard-ai path begin/)
     assert.doesNotMatch(rcText(), /alias claude=/)
   })
@@ -318,7 +330,7 @@ describe('setup replaces an alias install with the shim', () => {
 
   const rc = () => path.join(home, '.zshrc')
   const rcText = () => fs.readFileSync(rc(), 'utf8')
-  const shimText = () => fs.readFileSync(path.join(home, 'shim-bin', 'claude'), 'utf8')
+  const shimText = () => fs.readFileSync(path.join(home, 'shim-bin', shimFile('claude')), 'utf8')
 
   function setup(extra = []) {
     return spawnSync(
@@ -353,7 +365,7 @@ describe('setup replaces an alias install with the shim', () => {
     assert.equal(r.status, 0, r.stderr)
     assert.match(r.stdout, /the old geo-guard alias block is gone/)
     assert.doesNotMatch(rcText(), /alias claude=/)
-    assert.match(shimText(), /exec "\$GG" claude --dangerously-skip-permissions "\$@"/)
+    assert.match(shimText(), runsLine('claude', '--dangerously-skip-permissions'))
     // Lines that are not ours are exactly where they were.
     assert.match(rcText(), /export FOO=1/)
     assert.match(rcText(), /alias ll="ls -la"/)
@@ -383,19 +395,19 @@ describe('setup replaces an alias install with the shim', () => {
     assert.equal(setup().status, 0)
     assert.equal(setup().status, 0)
 
-    assert.match(shimText(), /claude --mine "\$@"/)
+    assert.match(shimText(), runsLine('claude', '--mine'))
   })
 
   test('--claude-args sets the flags, an empty value clears them', () => {
     setup(['--claude-args', '--dangerously-skip-permissions'])
-    assert.match(shimText(), /claude --dangerously-skip-permissions "\$@"/)
+    assert.match(shimText(), runsLine('claude', '--dangerously-skip-permissions'))
 
     // Asking for particular flags outranks keeping what is there.
     setup(['--claude-args', '--verbose --foo'])
-    assert.match(shimText(), /claude --verbose --foo "\$@"/)
+    assert.match(shimText(), runsLine('claude', '--verbose --foo'))
 
     setup(['--claude-args', ''])
-    assert.match(shimText(), /claude "\$@"/)
+    assert.match(shimText(), runsLine('claude'))
   })
 
   test('--claude-args wins over what the alias block carried', () => {
@@ -406,7 +418,7 @@ describe('setup replaces an alias install with the shim', () => {
 
     assert.equal(setup(['--claude-args', '--theirs']).status, 0)
 
-    assert.match(shimText(), /claude --theirs "\$@"/)
+    assert.match(shimText(), runsLine('claude', '--theirs'))
   })
 
   test('flags with a line break are refused before anything is written', () => {
@@ -414,7 +426,7 @@ describe('setup replaces an alias install with the shim', () => {
 
     assert.notEqual(r.status, 0)
     assert.match(r.stderr, /cannot contain control characters/)
-    assert.equal(fs.existsSync(path.join(home, 'shim-bin', 'claude')), false)
+    assert.equal(fs.existsSync(path.join(home, 'shim-bin', shimFile('claude'))), false)
   })
 
   test('interactive: Enter on the flags question keeps what is in place', () => {
@@ -441,7 +453,7 @@ describe('setup replaces an alias install with the shim', () => {
     assert.equal(r.status, 0, r.stderr)
     // The question offers the flags already in place as its default.
     assert.match(r.stdout, /Flags to pass to claude on every launch[^:]*\[--dangerously-skip-permissions\]/)
-    assert.match(shimText(), /claude --dangerously-skip-permissions "\$@"/)
+    assert.match(shimText(), runsLine('claude', '--dangerously-skip-permissions'))
   })
 
   test('no flags anywhere means no flags question at all', () => {
@@ -496,17 +508,22 @@ describe('setup gates cursor-agent separately', () => {
     }
   })
 
-  /** A cursor-agent on PATH — the only thing that makes setup want to gate it. */
+  /**
+   * A cursor-agent on PATH — the only thing that makes setup want to gate it.
+   * On Windows a name with no extension in PATHEXT is not executable, so an
+   * extensionless file here would leave setup correctly believing there is no
+   * cursor-agent to gate.
+   */
   function installFakeCursorAgent() {
-    const file = path.join(binDir, 'cursor-agent')
-    fs.writeFileSync(file, '#!/bin/sh\nexit 0\n')
+    const file = path.join(binDir, isWindows ? 'cursor-agent.cmd' : 'cursor-agent')
+    fs.writeFileSync(file, isWindows ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
     fs.chmodSync(file, 0o755)
   }
 
   const rc = () => path.join(home, '.zshrc')
   const rcText = () => (fs.existsSync(rc()) ? fs.readFileSync(rc(), 'utf8') : '')
   const shimDir = () => path.join(home, 'shim-bin')
-  const hasShim = name => fs.existsSync(path.join(shimDir(), name))
+  const hasShim = name => fs.existsSync(path.join(shimDir(), shimFile(name)))
 
   function run(command, args = [], pathValue = binDir) {
     return spawnSync(process.execPath, [cli, command, ...args], {
@@ -570,7 +587,7 @@ describe('setup gates cursor-agent separately', () => {
     installFakeCursorAgent()
     setup()
 
-    fs.rmSync(path.join(shimDir(), 'claude'))
+    fs.rmSync(path.join(shimDir(), shimFile('claude')))
     assert.equal(setup(['--no-shim', '--cursor-shim']).status, 0)
 
     assert.equal(hasShim('claude'), false)
@@ -580,13 +597,16 @@ describe('setup gates cursor-agent separately', () => {
   test('a file of someone else\'s under that name is never overwritten', () => {
     installFakeCursorAgent()
     fs.mkdirSync(shimDir(), { recursive: true })
-    fs.writeFileSync(path.join(shimDir(), 'cursor-agent'), '#!/bin/sh\necho mine\n')
+    fs.writeFileSync(path.join(shimDir(), shimFile('cursor-agent')), '#!/bin/sh\necho mine\n')
 
     const r = setup()
 
     assert.equal(r.status, 0, r.stderr)
     assert.match(r.stdout, /is not ours/)
-    assert.equal(fs.readFileSync(path.join(shimDir(), 'cursor-agent'), 'utf8'), '#!/bin/sh\necho mine\n')
+    assert.equal(
+      fs.readFileSync(path.join(shimDir(), shimFile('cursor-agent')), 'utf8'),
+      '#!/bin/sh\necho mine\n',
+    )
   })
 
   test('status reports both gates, and uninstall takes them away', () => {
@@ -668,7 +688,9 @@ describe('setup --shells writes the PATH entry into every shell asked for', () =
     assert.match(read(bashrc()), /geo-guard-ai path begin/)
   })
 
-  test("bash also gets the entry in its login file, which never reads ~/.bashrc", () => {
+  // Skipped on Windows: there is no login bash to serve, and setup writes no
+  // login file there — the user PATH in HKCU\\Environment does that job instead.
+  test("bash also gets the entry in its login file, which never reads ~/.bashrc", { skip: isWindows }, () => {
     // A login bash reads its login file and never ~/.bashrc, and an interactive
     // one reads ~/.bashrc and never the login file. Sourcing one from the other
     // does not join them: a distribution's ~/.bashrc returns early unless the
@@ -767,7 +789,7 @@ describe('uninstall takes the whole gate away, and nothing else', () => {
     const r = run('uninstall')
 
     assert.equal(r.status, 0, r.stderr)
-    assert.equal(fs.existsSync(path.join(shimDir(), 'claude')), false)
+    assert.equal(fs.existsSync(path.join(shimDir(), shimFile('claude'))), false)
     // The directory stays, because taking it would take the user's files with it.
     assert.equal(fs.readFileSync(path.join(shimDir(), 'notes.txt'), 'utf8'), 'mine\n')
     assert.equal(fs.readFileSync(path.join(shimDir(), 'codex'), 'utf8'), '#!/bin/sh\necho mine\n')

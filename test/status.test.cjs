@@ -82,13 +82,28 @@ function snapshot(dir) {
   return out
 }
 
+// On Windows the shim is `claude.cmd` and its body is a batch file: `call "%GG%"
+// … %*` where POSIX writes `exec "$GG" … "$@"`. Asserting one spelling turned
+// the whole Windows suite red while the code was right.
+const isWindows = process.platform === 'win32'
+const shimFile = name => (isWindows ? `${name}.cmd` : name)
+const runsLine = (command, flags = '') => {
+  const tail = flags ? ` ${flags}` : ''
+  if (isWindows) return new RegExp(`call "%GG%" ${command}${tail} %\\*`)
+  return new RegExp(`exec "\\$GG" ${command}${tail} "\\$@"`)
+}
+/** The bit of the run line the user's own flags get appended to. */
+const runsTail = command => (isWindows ? `${command} %*` : `${command} "$@"`)
+
 describe('geo-guard status', () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-status-'))
     fs.mkdirSync(path.join(home, 'cfg'), { recursive: true })
     realBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-status-bin-'))
-    const claude = path.join(realBinDir, 'claude')
-    fs.writeFileSync(claude, '#!/bin/sh\nexit 0\n')
+    // The stand-in for the real Claude Code: on Windows a name without an
+    // extension in PATHEXT is not executable, so resolveRealBin would not see it.
+    const claude = path.join(realBinDir, isWindows ? 'claude.cmd' : 'claude')
+    fs.writeFileSync(claude, isWindows ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n')
     fs.chmodSync(claude, 0o755)
   })
   afterEach(() => {
@@ -215,7 +230,7 @@ describe('geo-guard status', () => {
 
   test('a missing shim file → exit 1 naming the command', () => {
     install()
-    fs.rmSync(path.join(shimDir(), 'claude'))
+    fs.rmSync(path.join(shimDir(), shimFile('claude')))
     const r = status()
     assert.equal(r.status, 1)
     assert.match(r.stdout, /no shim for claude/)
@@ -266,10 +281,10 @@ describe('geo-guard status', () => {
 
   test('a shim carrying the user’s own flags is reported as such', () => {
     install()
-    const shim = path.join(shimDir(), 'claude')
+    const shim = path.join(shimDir(), shimFile('claude'))
     fs.writeFileSync(
       shim,
-      fs.readFileSync(shim, 'utf8').replace('claude "$@"', 'claude --foo "$@"'),
+      fs.readFileSync(shim, 'utf8').replace(runsTail('claude'), runsTail('claude --foo')),
     )
     const r = status()
     assert.equal(r.status, 0, r.stdout + r.stderr)
@@ -278,7 +293,7 @@ describe('geo-guard status', () => {
 
   test('a file of someone else’s where our shim belongs → exit 1', () => {
     install()
-    fs.writeFileSync(path.join(shimDir(), 'claude'), '#!/bin/sh\necho mine\n')
+    fs.writeFileSync(path.join(shimDir(), shimFile('claude')), '#!/bin/sh\necho mine\n')
     const r = status()
     assert.equal(r.status, 1)
     assert.match(r.stdout, /is not ours — the launch gate is not installed/)
@@ -436,8 +451,8 @@ describe('geo-guard status: alias blocks left over from an earlier version', () 
     // Untouched, exactly as promised — and the flags still made it into the shim.
     assert.match(fs.readFileSync(rc(), 'utf8'), /alias claude="geo-guard claude --mine"/)
     assert.match(
-      fs.readFileSync(path.join(home, 'shim-bin', 'claude'), 'utf8'),
-      /claude --mine "\$@"/,
+      fs.readFileSync(path.join(home, 'shim-bin', shimFile('claude')), 'utf8'),
+      runsLine('claude', '--mine'),
     )
   })
 })

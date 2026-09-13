@@ -203,7 +203,9 @@ describe('readShim', () => {
   test('наш маркер, но тело правили руками → custom (не перезаписываем молча)', () => {
     fs.mkdirSync(shimDir(), { recursive: true })
     const file = shimPathFor(CLAUDE_TARGET)
-    const body = shimBody(CLAUDE_TARGET, '/opt/geo-guard').replace(/exec .*/, 'echo hi')
+    // The run line is `exec …` on POSIX and `call …` on Windows — match either,
+    // or on Windows nothing is replaced and the body stays pristine.
+    const body = shimBody(CLAUDE_TARGET, '/opt/geo-guard').replace(/^(?:exec|call) .*/m, 'echo hi')
     fs.writeFileSync(file, body)
 
     const shim = readShim(CLAUDE_TARGET)
