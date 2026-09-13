@@ -19,6 +19,24 @@ export const END_MARKER = `# <<< ${PACKAGE_NAME} end <<<`
 export const CURSOR_BEGIN_MARKER = `# >>> ${PACKAGE_NAME} cursor-agent begin >>>`
 export const CURSOR_END_MARKER = `# <<< ${PACKAGE_NAME} cursor-agent end <<<`
 
+/**
+ * The PATH entry lives in a block of its own, separate from every alias block.
+ * Aliases and PATH are removed independently (a user may want the launch gate
+ * without an alias), and a shared block would make one impossible to drop
+ * without rewriting the other.
+ */
+export const PATH_BEGIN_MARKER = `# >>> ${PACKAGE_NAME} path begin >>>`
+export const PATH_END_MARKER = `# <<< ${PACKAGE_NAME} path end <<<`
+
+/**
+ * The substring every shim we generate carries in its first lines. Two places
+ * read it: the shim module (to tell our file from someone else's) and
+ * resolve-bin (to refuse to launch a shim as if it were the real binary).
+ * Deliberately version-free — a v2 shim must still be recognized by a v1 build.
+ */
+export const SHIM_MARKER_TAG = `${PACKAGE_NAME} shim`
+export const SHIM_MARKER_VERSION = 'v1'
+
 export type GeoGuardConfig = Readonly<{
   allowed: string[]
   timeoutMs: number

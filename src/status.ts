@@ -11,6 +11,7 @@
  */
 
 import fs from 'node:fs'
+import path from 'node:path'
 
 import { assertClaudeHooksInstallable, claudeHookInstalled, settingsPath } from './claude-hook'
 import {
@@ -23,14 +24,17 @@ import { configPath, loadConfig, readConfigFile, type GeoGuardConfigFile } from 
 import { showConfig } from './config-cmd'
 import { detectCountry, isAllowed } from './geo'
 import {
-  type AliasTarget,
+  ALIAS_TARGETS,
   CLAUDE_TARGET,
   CURSOR_AGENT_TARGET,
+  candidateRcPaths,
   detectShell,
   readAliasBlock,
-  rcPathForShellResolved,
 } from './shell-alias'
-import { commandExists } from './resolve-bin'
+import { pathRcPathForShell, readPathBlock } from './shell-path'
+import { isShimFile, readShim, shimDir, type ShimTarget } from './shim'
+import { processPathContains, userPathState } from './windows-path'
+import { commandExists, resolveRealBin, whichAll } from './resolve-bin'
 import { msg } from './i18n'
 
 function errorMessage(err: unknown): string {
@@ -50,16 +54,6 @@ function fileState(file: string): 'present' | 'missing' | { problem: string } {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return 'missing'
     return { problem: errorMessage(err) }
   }
-}
-
-/**
- * Content from someone else's file, on its way to a terminal. Escape sequences
- * in an rc file would otherwise retitle the window or clear the screen when the
- * report echoes the block back.
- */
-function forDisplay(value: string): string {
-  // eslint-disable-next-line no-control-regex
-  return value.replace(/[\u0000-\u001f\u007f]/g, ' ').trim()
 }
 
 /** The config path, the effective policy, and whether the file is actually there. */
@@ -144,82 +138,221 @@ function reportHook(
 }
 
 /**
- * The marker block in the rc file: ours, ours-with-your-flags, or someone
- * else's. One target per call — each alias has its own block and its own answer.
+ * Whether PATH actually reaches our shim for this command, before anything else.
  *
- * `wanted` is for an alias setup would not have installed here: no cursor-agent
- * on PATH means no alias to miss. A block that exists is always reported, even
- * then — a leftover pointing at a command that is gone is worth seeing.
+ * This is the question `status` exists to answer. A shim file and a PATH block
+ * in an rc both being present proves only that setup ran: the shell the user is
+ * typing in may have started before either existed, and then the gate is not in
+ * effect and nothing on disk says so.
  */
-function reportAlias(
-  target: AliasTarget,
-  header: (file: string) => string,
+function reportShimEffective(target: ShimTarget): boolean {
+  const first = whichAll(target.command)[0]
+  if (first === undefined) {
+    console.log(msg().statusShimNotOnPath(shimDir()))
+    return false
+  }
+  if (!isShimFile(first)) {
+    console.log(msg().statusShimNotFirst(first))
+    return false
+  }
+
+  try {
+    // The shim launches whatever this resolves to. If it resolves to nothing,
+    // the gate is in place and every launch through it fails.
+    resolveRealBin(target.command)
+  } catch (err) {
+    console.log(msg().statusShimNoRealBin(target.command, errorMessage(err)))
+    return false
+  }
+  return true
+}
+
+/**
+ * The launch gate for one command. One target per call — claude and
+ * cursor-agent have their own file, their own policy and their own answer.
+ *
+ * `wanted` is for a command that is not installed here: setup gates no
+ * cursor-agent it cannot find, so demanding a shim for it would report a
+ * healthy install as broken.
+ */
+function reportShim(
+  target: ShimTarget,
   options: Readonly<{ wanted?: () => boolean }> = {},
 ): boolean {
   const wanted = options.wanted === undefined || options.wanted()
-  let file: string
-  let content: string
-  try {
-    // Inside the try: resolving the path reads the environment and the home
-    // directory, and a report must not die on one section's bad luck.
-    file = rcPathForShellResolved(detectShell())
-    console.log(header(file))
 
-    const state = fileState(file)
-    if (state === 'missing') {
-      if (!wanted) {
-        console.log(msg().statusAliasNotNeeded(target.command))
-        return true
-      }
-      console.log(msg().statusAliasFileMissing())
-      return false
-    }
-    if (state !== 'present') {
-      console.log(msg().statusProblem(state.problem))
-      return false
-    }
-    content = fs.readFileSync(file, 'utf8')
+  let shim: ReturnType<typeof readShim>
+  try {
+    shim = readShim(target)
   } catch (err) {
     console.log(msg().statusProblem(errorMessage(err)))
     return false
   }
 
-  // The same reading setup uses — answering this question twice is how the two
-  // came to disagree about a block with no END marker.
-  const block = readAliasBlock(content, target)
-
-  if (block.kind === 'none') {
+  if (shim.kind === 'none') {
     if (!wanted) {
-      console.log(msg().statusAliasNotNeeded(target.command))
+      console.log(msg().statusShimNotNeeded(target.command))
       return true
     }
-    console.log(msg().statusAliasMissing())
+    console.log(msg().statusShimMissing(target.command))
     return false
   }
 
-  if (block.broken) {
-    // setup can repair a block of ours; anything else it refuses to touch, so
-    // saying "re-run setup" there would send the user in a circle.
-    if (block.kind === 'pristine') {
-      console.log(msg().statusAliasBrokenRepairable(forDisplay(block.body)))
-    } else {
-      console.log(msg().statusAliasBroken(forDisplay(block.body)))
+  if (shim.kind === 'foreign') {
+    console.log(msg().statusShimForeign(shim.file))
+    return false
+  }
+
+  if (shim.extraArgs) {
+    console.log(msg().statusShimCustom(target.command, shim.extraArgs))
+  } else {
+    console.log(msg().statusShimPristine(target.command))
+  }
+
+  return reportShimEffective(target)
+}
+
+/** Our PATH block: the rc of the current shell decides, the others are noted. */
+function reportPathEntry(): boolean {
+  const dir = shimDir()
+
+  let file: string
+  try {
+    file = pathRcPathForShell(detectShell())
+  } catch (err) {
+    console.log(msg().statusProblem(errorMessage(err)))
+    return false
+  }
+  console.log(msg().statusPathHeader(file))
+
+  let ok = false
+  const state = fileState(file)
+  if (state === 'missing') {
+    console.log(msg().statusPathFileMissing())
+  } else if (state !== 'present') {
+    console.log(msg().statusProblem(state.problem))
+  } else {
+    ok = reportPathBlockIn(file, dir)
+  }
+
+  const others = candidateRcPaths().filter(
+    other => path.normalize(other) !== path.normalize(file) && hasPathEntry(other, dir),
+  )
+  if (others.length > 0) console.log(msg().statusPathAlsoIn(others.join(', ')))
+
+  return ok
+}
+
+/** The verdict on one file's PATH block, printed. */
+function reportPathBlockIn(file: string, dir: string): boolean {
+  let block
+  try {
+    block = readPathBlock(fs.readFileSync(file, 'utf8'))
+  } catch (err) {
+    console.log(msg().statusProblem(errorMessage(err)))
+    return false
+  }
+
+  if (block.kind === 'foreign') {
+    console.log(msg().statusPathForeign())
+    return false
+  }
+  if (block.kind === 'pristine' && block.dir === dir) {
+    console.log(msg().statusPathPresent(dir))
+    return true
+  }
+  // A block naming some other directory is as good as no block: the shims we
+  // install are not on the PATH it builds.
+  console.log(msg().statusPathMissing(dir))
+  return false
+}
+
+/** Quiet version of the above, for the rc files we only mention. */
+function hasPathEntry(file: string, dir: string): boolean {
+  try {
+    const block = readPathBlock(fs.readFileSync(file, 'utf8'))
+    return block.kind === 'pristine' && block.dir === dir
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The Windows half of "does the gate actually work".
+ *
+ * The PowerShell profile checked above says nothing about cmd.exe, a shortcut
+ * or an IDE — those read the user PATH. Both answers are reported: the user
+ * PATH is what every new process will get, the process PATH is what this
+ * terminal has, and a terminal opened before setup differs from both.
+ *
+ * A user PATH we could not read is not counted as a fault: we have no evidence
+ * either way, and failing the report on that would send the user to a setup run
+ * that would fail in the same place.
+ */
+function reportUserPath(): boolean {
+  const dir = shimDir()
+  console.log(msg().statusUserPathHeader())
+
+  const user = userPathState(dir)
+  let ok = true
+  if (user.state === 'present') {
+    console.log(msg().statusUserPathPresent(dir))
+  } else if (user.state === 'missing') {
+    console.log(msg().statusUserPathMissing(dir))
+    ok = false
+  } else {
+    console.log(msg().statusUserPathUnknown(user.detail))
+  }
+
+  if (processPathContains(dir)) {
+    console.log(msg().statusProcessPathPresent(dir))
+  } else {
+    console.log(msg().statusProcessPathMissing(dir))
+    ok = false
+  }
+
+  return ok
+}
+
+/**
+ * Alias blocks from before the PATH gate.
+ *
+ * They gate nothing the shim does not already gate, and they shadow it in an
+ * interactive shell — so an old block with old flags quietly wins over the one
+ * setup just wrote. Reported only when there is one: a machine that never had
+ * an alias should not be told about a section that does not apply to it.
+ */
+function reportAliasLeftovers(): boolean {
+  const lines: string[] = []
+
+  for (const file of candidateRcPaths()) {
+    let content: string
+    try {
+      content = fs.readFileSync(file, 'utf8')
+    } catch {
+      continue
     }
-    return false
+
+    for (const target of ALIAS_TARGETS) {
+      const block = readAliasBlock(content, target)
+      // Foreign content between our markers is not reported here at all: it is
+      // not an alias of ours, and it is nobody's business but the user's.
+      if (block.kind !== 'pristine' && block.kind !== 'custom') continue
+
+      // A block with no END marker is ours by its body and not ours to cut —
+      // setup leaves it alone, so saying "setup takes it out" would send the
+      // user round a loop that never closes.
+      if (block.broken) lines.push(msg().statusAliasLeftoverBroken(file))
+      else lines.push(msg().statusAliasLeftover(file))
+      break
+    }
   }
 
-  if (block.kind === 'pristine') {
-    console.log(msg().statusAliasPristine(block.name ?? '', target.command))
-    return true
-  }
-  // Still our alias, still routed through the geo-check — the user just added
-  // flags of their own, which setup deliberately keeps.
-  if (block.kind === 'custom') {
-    console.log(msg().statusAliasCustom(forDisplay(block.body)))
-    return true
-  }
+  if (lines.length === 0) return true
 
-  console.log(msg().statusAliasForeign(forDisplay(block.body)))
+  console.log(msg().statusAliasLeftoverHeader())
+  for (const line of lines) console.log(line)
+  console.log('')
   return false
 }
 
@@ -299,15 +432,24 @@ export async function runStatus(argv: string[] = []): Promise<boolean> {
   )
   console.log('')
 
-  results.push(reportAlias(CLAUDE_TARGET, msg().statusAliasHeader))
-  console.log('')
-
+  console.log(msg().statusShimHeader(shimDir()))
+  results.push(reportShim(CLAUDE_TARGET))
   results.push(
-    reportAlias(CURSOR_AGENT_TARGET, msg().statusCursorAliasHeader, {
+    reportShim(CURSOR_AGENT_TARGET, {
       wanted: () => commandExists(CURSOR_AGENT_TARGET.command),
     }),
   )
   console.log('')
+
+  results.push(reportPathEntry())
+  console.log('')
+
+  if (process.platform === 'win32') {
+    results.push(reportUserPath())
+    console.log('')
+  }
+
+  results.push(reportAliasLeftovers())
 
   // A config we could not read means the built-in defaults apply; the error was
   // already reported above, so it is not repeated here.

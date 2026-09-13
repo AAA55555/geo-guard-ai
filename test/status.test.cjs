@@ -11,6 +11,17 @@ const cli = path.join(__dirname, '..', 'dist', 'cli.js')
 const mockFetch = path.join(__dirname, 'fixtures', 'mock-fetch.cjs')
 
 let home
+/** Holds the "real" claude, outside $HOME so the home snapshots stay clean. */
+let realBinDir
+
+const shimDir = () => path.join(home, 'shim-bin')
+
+/**
+ * The shim directory first, the real binary behind it — the PATH a working
+ * install actually has. status judges the gate by this, not by files on disk,
+ * so a test that pinned PATH empty would report every install as broken.
+ */
+const livePath = () => `${shimDir()}${path.delimiter}${realBinDir}`
 
 function env(extra) {
   return {
@@ -21,11 +32,11 @@ function env(extra) {
     GEO_GUARD_SHELL: 'zsh',
     GEO_GUARD_CONFIG_DIR: path.join(home, 'cfg'),
     GEO_GUARD_CONFIG_FILE: path.join(home, 'cfg', 'config.json'),
+    GEO_GUARD_SHIM_DIR: shimDir(),
     GEO_GUARD_LANG: 'en',
-    // Pinned empty: setup and status look for cursor-agent on PATH to decide
-    // whether that alias is wanted, and a test must not depend on whether the
-    // machine running it happens to have Cursor installed.
-    PATH: '',
+    // Only claude here: whether the cursor-agent gate is wanted is decided by
+    // PATH, and a test must not depend on the machine having Cursor installed.
+    PATH: livePath(),
     // No network from the test suite: every provider answers RU.
     NODE_OPTIONS: `--require ${mockFetch}`,
     ...extra,
@@ -44,7 +55,7 @@ function status(extraEnv) {
 }
 
 function install() {
-  const r = run(['setup', '--yes', '--countries', 'RU,NL', '--hook', '--cursor', '--alias'])
+  const r = run(['setup', '--yes', '--countries', 'RU,NL', '--hook', '--cursor', '--shim'])
   assert.equal(r.status, 0, r.stderr)
 }
 
@@ -75,9 +86,14 @@ describe('geo-guard status', () => {
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-status-'))
     fs.mkdirSync(path.join(home, 'cfg'), { recursive: true })
+    realBinDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-status-bin-'))
+    const claude = path.join(realBinDir, 'claude')
+    fs.writeFileSync(claude, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(claude, 0o755)
   })
   afterEach(() => {
     fs.rmSync(home, { recursive: true, force: true })
+    fs.rmSync(realBinDir, { recursive: true, force: true })
   })
 
   test('everything installed → exit 0', () => {
@@ -86,7 +102,8 @@ describe('geo-guard status', () => {
     assert.equal(r.status, 0, r.stdout + r.stderr)
     assert.match(r.stdout, /Everything geo-guard installs is in place/)
     assert.match(r.stdout, /config file found/)
-    assert.match(r.stdout, /alias 'claude'/)
+    assert.match(r.stdout, /claude goes through geo-guard/)
+    assert.match(r.stdout, /is added to PATH/)
     // Both hook files report their entry.
     assert.equal(r.stdout.match(/our hook entry is in place/g).length, 2)
   })
@@ -165,12 +182,54 @@ describe('geo-guard status', () => {
     assert.match(r.stdout, /Claude Code hook: [^\n]*\n {2}✅/)
   })
 
-  test('missing alias block → exit 1 naming it', () => {
+  test('missing PATH block → exit 1 naming it', () => {
     install()
     fs.writeFileSync(rcFile(), 'export FOO=1\n')
     const r = status()
     assert.equal(r.status, 1)
-    assert.match(r.stdout, /no geo-guard alias block in this file/)
+    assert.match(r.stdout, /is not added to PATH in this file/)
+  })
+
+  test('a shim that PATH never reaches is reported as not in effect', () => {
+    // The case the alias gate could never see: setup wrote everything, but this
+    // shell started before it did, so the gate is installed and not working.
+    install()
+    const r = status({ PATH: realBinDir })
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /PATH finds another binary first/)
+  })
+
+  test('an empty PATH says the shim directory is not on it', () => {
+    install()
+    const r = status({ PATH: '' })
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /is not on this shell's PATH/)
+  })
+
+  test('a shim with no real binary behind it is reported, not hidden', () => {
+    install()
+    const r = status({ PATH: shimDir() })
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /the real claude behind the shim cannot be found/)
+  })
+
+  test('a missing shim file → exit 1 naming the command', () => {
+    install()
+    fs.rmSync(path.join(shimDir(), 'claude'))
+    const r = status()
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /no shim for claude/)
+  })
+
+  test('an alias block left over from an earlier version is reported', () => {
+    install()
+    fs.appendFileSync(
+      rcFile(),
+      '\n# >>> geo-guard-ai begin >>>\nalias claude="geo-guard claude"\n# <<< geo-guard-ai end <<<\n',
+    )
+    const r = status()
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /an old geo-guard alias block is still in/)
   })
 
   test('a malformed hook file is reported, not crashed on', () => {
@@ -205,25 +264,38 @@ describe('geo-guard status', () => {
     assert.match(r.stdout, /our hook entry is in place/)
   })
 
-  test('an alias carrying the user’s own flags is reported as such', () => {
+  test('a shim carrying the user’s own flags is reported as such', () => {
     install()
-    const rc = fs.readFileSync(rcFile(), 'utf8')
+    const shim = path.join(shimDir(), 'claude')
     fs.writeFileSync(
-      rcFile(),
-      rc.replace('alias claude="geo-guard claude"', 'alias claude="geo-guard claude --foo"'),
+      shim,
+      fs.readFileSync(shim, 'utf8').replace('claude "$@"', 'claude --foo "$@"'),
     )
     const r = status()
     assert.equal(r.status, 0, r.stdout + r.stderr)
-    assert.match(r.stdout, /alias with flags of your own: alias claude="geo-guard claude --foo"/)
+    assert.match(r.stdout, /claude goes through geo-guard, with flags of your own: --foo/)
   })
 
-  test('foreign content inside our markers → exit 1', () => {
+  test('a file of someone else’s where our shim belongs → exit 1', () => {
     install()
-    const rc = fs.readFileSync(rcFile(), 'utf8')
-    fs.writeFileSync(rcFile(), rc.replace('alias claude="geo-guard claude"', 'export SECRET=1'))
+    fs.writeFileSync(path.join(shimDir(), 'claude'), '#!/bin/sh\necho mine\n')
     const r = status()
     assert.equal(r.status, 1)
-    assert.match(r.stdout, /holds foreign content: export SECRET=1/)
+    assert.match(r.stdout, /is not ours — the launch gate is not installed/)
+  })
+
+  test('foreign content inside our PATH markers → exit 1', () => {
+    install()
+    const rc = fs.readFileSync(rcFile(), 'utf8')
+    const begin = rc.indexOf('# >>> geo-guard-ai path begin >>>')
+    const end = rc.indexOf('# <<< geo-guard-ai path end <<<')
+    fs.writeFileSync(
+      rcFile(),
+      `${rc.slice(0, begin)}# >>> geo-guard-ai path begin >>>\nexport SECRET=1\n${rc.slice(end)}`,
+    )
+    const r = status()
+    assert.equal(r.status, 1)
+    assert.match(r.stdout, /PATH block holds foreign content/)
   })
 
   test('a blocked country does not fail the report', () => {
@@ -297,14 +369,14 @@ describe('geo-guard status: the path line is printed once', () => {
   })
 })
 
-describe('geo-guard status: a block with no END marker', () => {
+describe('geo-guard status: alias blocks left over from an earlier version', () => {
   const cli = path.join(__dirname, '..', 'dist', 'cli.js')
   let home
   let cfgDir
 
   beforeEach(() => {
-    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-brokenblock-'))
-    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-brokenblock-cfg-'))
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-leftover-'))
+    cfgDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-leftover-cfg-'))
   })
   afterEach(() => {
     fs.rmSync(home, { recursive: true, force: true })
@@ -323,6 +395,7 @@ describe('geo-guard status: a block with no END marker', () => {
         GEO_GUARD_SHELL: 'zsh',
         GEO_GUARD_CONFIG_DIR: cfgDir,
         GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+        GEO_GUARD_SHIM_DIR: path.join(home, 'shim-bin'),
         GEO_GUARD_PROVIDERS: '',
         GEO_GUARD_LANG: 'en',
         PATH: '',
@@ -331,31 +404,40 @@ describe('geo-guard status: a block with no END marker', () => {
     })
   }
 
-  test('is not reported as "no block" — status and setup must read it the same way', () => {
-    // Раньше status отвечал «в файле нет geo-guard-блока», а setup на том же
-    // файле — «alias с твоими флагами, не трогаем». Из-за этого рецепт
-    // `status || setup` из README не сходился никогда.
-    fs.writeFileSync(rc(), '# >>> geo-guard-ai begin >>>\nalias claude="geo-guard claude --mine"\n')
-
-    const r = run('status')
-
-    assert.doesNotMatch(r.stdout, /no geo-guard alias block/)
-    assert.match(r.stdout, /no END marker/)
-    assert.match(r.stdout, /fix the file by hand/)
-    assert.equal(r.status, 1)
-  })
-
-  test('a block of ours says setup will repair it, and setup does', () => {
-    fs.writeFileSync(rc(), '# >>> geo-guard-ai begin >>>\nalias claude="geo-guard claude"\n')
+  test('a block of ours is reported, and setup does take it out', () => {
+    fs.writeFileSync(
+      rc(),
+      '# >>> geo-guard-ai begin >>>\nalias claude="geo-guard claude"\n# <<< geo-guard-ai end <<<\n',
+    )
 
     const before = run('status')
-    assert.match(before.stdout, /no END marker/)
-    assert.match(before.stdout, /will repair it/)
+    assert.match(before.stdout, /an old geo-guard alias block is still in/)
     assert.equal(before.status, 1)
 
     assert.equal(run('setup', ['--yes', '--countries', 'RU', '--no-hook', '--no-cursor']).status, 0)
 
     const after = run('status')
-    assert.match(after.stdout, /alias 'claude'/)
+    assert.doesNotMatch(after.stdout, /old geo-guard alias block/)
+  })
+
+  test('a block with no END marker says "by hand" — setup will not cut it', () => {
+    // status and setup have to read such a block the same way. When status said
+    // "re-run setup" about something setup refuses to touch, the advice was a
+    // loop that never closed.
+    fs.writeFileSync(rc(), '# >>> geo-guard-ai begin >>>\nalias claude="geo-guard claude --mine"\n')
+
+    const r = run('status')
+
+    assert.match(r.stdout, /has no END marker/)
+    assert.match(r.stdout, /remove it by hand/)
+    assert.equal(r.status, 1)
+
+    assert.equal(run('setup', ['--yes', '--countries', 'RU', '--no-hook', '--no-cursor']).status, 0)
+    // Untouched, exactly as promised — and the flags still made it into the shim.
+    assert.match(fs.readFileSync(rc(), 'utf8'), /alias claude="geo-guard claude --mine"/)
+    assert.match(
+      fs.readFileSync(path.join(home, 'shim-bin', 'claude'), 'utf8'),
+      /claude --mine "\$@"/,
+    )
   })
 })

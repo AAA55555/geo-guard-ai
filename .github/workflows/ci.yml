@@ -9,6 +9,11 @@ jobs:
   # Full suite: typecheck, units, e2e and the packed-tarball check.
   # The Node axis lives here because it is the cheap runner — the engines floor
   # (18.20) and the current release are both about Node behaviour, not the OS.
+  #
+  # No Linux-only step: the one place the platforms used to differ — which login
+  # file bash reads, ~/.profile on most distributions and ~/.bash_profile on a
+  # fresh macOS account — is now decided by which file exists, not by
+  # process.platform, so the unit suite covers it here in a temporary HOME.
   test:
     name: ubuntu / node ${{ matrix.node }}
     runs-on: ubuntu-latest
@@ -52,8 +57,9 @@ jobs:
       - run: npm run test:pack
 
   # Windows has a real code surface of its own — the powershell branch of
-  # shell-alias, %APPDATA% in config, PATHEXT in resolve-bin, spawning a .cmd in
-  # run — and nothing used to exercise it.
+  # shell-alias, the user PATH in HKCU\Environment (windows-path), %APPDATA% in
+  # config, PATHEXT in resolve-bin, spawning a .cmd in run — and nothing used to
+  # exercise it.
   #
   # Not repeated here: typecheck (tsc is platform-independent), test:e2e and
   # test:pack (both are POSIX-only sh scripts that skip themselves on Windows,

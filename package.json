@@ -1,6 +1,6 @@
 {
   "name": "geo-guard-ai",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "Geo-restriction for AI CLIs: check country by IP at launch and before every prompt (Claude Code, Cursor)",
   "bin": {
     "geo-guard": "bin/geo-guard.js"
@@ -10,6 +10,7 @@
     "dist",
     "README.md",
     "README.ru.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "scripts": {
@@ -19,6 +20,7 @@
     "test": "npm run build && node --test test/*.test.cjs",
     "test:e2e": "npm run build && sh scripts/e2e.sh",
     "test:pack": "npm run build && sh scripts/pack-check.sh",
+    "test:docker": "sh scripts/docker-test.sh",
     "postinstall": "node ./bin/postinstall.js",
     "preuninstall": "node ./bin/preuninstall.js"
   },

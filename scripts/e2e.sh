@@ -38,6 +38,9 @@ unset GEO_GUARD_ALLOWED GEO_GUARD_PROVIDERS GEO_GUARD_TIMEOUT GEO_GUARD_REAL_BIN
 export HOME="$SANDBOX"
 export GEO_GUARD_LANG=en
 export SHELL=/bin/zsh
+# The launch gate lives here for the whole run; never in the real ~/.geo-guard.
+SHIM_DIR="$SANDBOX/shim-bin"
+export GEO_GUARD_SHIM_DIR="$SHIM_DIR"
 
 echo "e2e: sandbox HOME=$SANDBOX"
 
@@ -63,7 +66,7 @@ EOF
 # ============================================================
 # 1. setup --yes with ~/.cursor present → both hooks installed
 # ============================================================
-node "$CLI" setup --yes --countries ES,PT --no-alias >/dev/null
+node "$CLI" setup --yes --countries ES,PT --no-shim >/dev/null
 
 CLAUDE_SETTINGS="$HOME/.claude/settings.json"
 CURSOR_HOOKS="$HOME/.cursor/hooks.json"
@@ -86,7 +89,7 @@ CURSOR_CMD="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process
 [ "$CLAUDE_CMD" = "$CURSOR_CMD" ] || fail "command strings differ: '$CLAUDE_CMD' vs '$CURSOR_CMD'"
 
 # idempotency: run setup again, no duplicate entries
-node "$CLI" setup --yes --countries ES,PT --no-alias >/dev/null
+node "$CLI" setup --yes --countries ES,PT --no-shim >/dev/null
 CLAUDE_HOOK_COUNT="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).hooks.UserPromptSubmit.flatMap(m=>m.hooks).filter(h=>/geo-guard/.test(h.command)).length)" "$CLAUDE_SETTINGS")"
 CURSOR_HOOK_COUNT="$(node -e "console.log(JSON.parse(require('fs').readFileSync(process.argv[1],'utf8')).hooks.beforeSubmitPrompt.filter(h=>/geo-guard/.test(h.command)).length)" "$CURSOR_HOOKS")"
 [ "$CLAUDE_HOOK_COUNT" = "1" ] || fail "duplicate claude hook after repeat setup"
@@ -113,11 +116,69 @@ echo "e2e: uninstall (foreign content preserved) OK"
 # 3. no ~/.cursor → --yes does not create a cursor hook
 # ============================================================
 rm -rf "$HOME/.cursor" "$CURSOR_HOOKS.bak"
-node "$CLI" setup --yes --countries ES --no-alias >/dev/null
+node "$CLI" setup --yes --countries ES --no-shim >/dev/null
 [ -f "$CURSOR_HOOKS" ] && fail "cursor hooks.json created despite absent ~/.cursor"
 assert_contains "$CLAUDE_SETTINGS" '"geo-guard check"'
 echo "e2e: setup without ~/.cursor (no cursor hook) OK"
 node "$CLI" uninstall --quiet >/dev/null
+
+# ============================================================
+# 3b. the launch gate: shim + PATH entry, and a clean removal
+# ============================================================
+FAKE_BIN="$SANDBOX/fakebin"
+mkdir -p "$FAKE_BIN"
+printf '#!/bin/sh\necho real-claude\n' > "$FAKE_BIN/claude"
+chmod +x "$FAKE_BIN/claude"
+
+node "$CLI" setup --yes --countries ES --no-hook --no-cursor >/dev/null
+
+[ -x "$SHIM_DIR/claude" ] || fail "no shim for claude"
+assert_contains "$SHIM_DIR/claude" 'geo-guard-ai shim v1: claude'
+assert_contains "$HOME/.zshrc" 'geo-guard-ai path begin'
+assert_contains "$HOME/.zshrc" "$SHIM_DIR"
+# The gate replaced the alias; no alias may be left behind.
+if grep -qF 'alias claude=' "$HOME/.zshrc"; then fail "setup still writes an alias"; fi
+
+# The gate only works if PATH finds the shim before the real binary — that is
+# what status checks, and it is the check the alias gate could never make.
+# GEO_GUARD_PROVIDERS is pinned empty: status must not reach the network here.
+GATE_OK="$(GEO_GUARD_PROVIDERS= PATH="$SHIM_DIR:$FAKE_BIN:$PATH" node "$CLI" status 2>/dev/null || true)"
+echo "$GATE_OK" | grep -qF 'claude goes through geo-guard' || fail "status does not see a working gate"
+if echo "$GATE_OK" | grep -qF 'PATH finds another binary first'; then
+  fail "status calls a working gate stale"
+fi
+
+GATE_STALE="$(GEO_GUARD_PROVIDERS= PATH="$FAKE_BIN:$PATH" node "$CLI" status 2>/dev/null || true)"
+echo "$GATE_STALE" | grep -qF 'PATH finds another binary first' ||
+  fail "status does not notice a shim PATH never reaches"
+
+echo "e2e: launch gate (shim, PATH entry, status) OK"
+
+# flags from an old alias move into the shim rather than being dropped
+node "$CLI" uninstall --quiet >/dev/null
+printf '# >>> geo-guard-ai begin >>>\nalias claude="geo-guard claude --dangerously-skip-permissions"\n# <<< geo-guard-ai end <<<\n' > "$HOME/.zshrc"
+node "$CLI" setup --yes --countries ES --no-hook --no-cursor >/dev/null
+assert_contains "$SHIM_DIR/claude" '--dangerously-skip-permissions'
+if grep -qF 'alias claude=' "$HOME/.zshrc"; then fail "the old alias block survived setup"; fi
+
+# ...and they survive every later run, now that no alias is left to carry them
+node "$CLI" setup --yes --countries ES --no-hook --no-cursor >/dev/null
+assert_contains "$SHIM_DIR/claude" '--dangerously-skip-permissions'
+
+# --claude-args is the explicit way to set them, an empty value clears them
+node "$CLI" setup --yes --countries ES --no-hook --no-cursor --claude-args '--verbose' >/dev/null
+assert_contains "$SHIM_DIR/claude" '--verbose'
+if grep -qF -- '--dangerously-skip-permissions' "$SHIM_DIR/claude"; then
+  fail "--claude-args did not replace the flags already in the shim"
+fi
+node "$CLI" setup --yes --countries ES --no-hook --no-cursor --claude-args '' >/dev/null
+if grep -qF -- '--verbose' "$SHIM_DIR/claude"; then fail "--claude-args '' did not clear the flags"; fi
+
+node "$CLI" uninstall --quiet >/dev/null
+if [ -e "$SHIM_DIR/claude" ]; then fail "shim survived uninstall"; fi
+if grep -qF 'geo-guard' "$HOME/.zshrc"; then fail "PATH block survived uninstall"; fi
+
+echo "e2e: launch gate (alias flags migrated, --claude-args, uninstall) OK"
 
 # ============================================================
 # 4. runCheck: fake local geo provider, no VPN needed
@@ -134,7 +195,7 @@ for _ in 1 2 3 4 5 6 7 8 9 10; do
 done
 [ -n "$PORT" ] || fail "fake geo provider did not start"
 
-node "$CLI" setup --yes --countries ES --no-hook --no-cursor --no-alias >/dev/null
+node "$CLI" setup --yes --countries ES --no-hook --no-cursor --no-shim >/dev/null
 
 set +e
 GEO_GUARD_PROVIDERS="http://127.0.0.1:$PORT/" node "$CLI" check >/dev/null 2>&1

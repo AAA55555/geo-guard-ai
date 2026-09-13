@@ -335,7 +335,7 @@ describe('malformed hook files', () => {
   function setup(extra = []) {
     return spawnSync(
       process.execPath,
-      [cli, 'setup', '--yes', '--countries', 'RU', '--no-alias', '--no-cursor', ...extra],
+      [cli, 'setup', '--yes', '--countries', 'RU', '--no-shim', '--no-cursor', ...extra],
       {
         env: {
           ...process.env,
@@ -345,6 +345,7 @@ describe('malformed hook files', () => {
           GEO_GUARD_SHELL: 'zsh',
           GEO_GUARD_CONFIG_DIR: cfgDir,
           GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+          GEO_GUARD_SHIM_DIR: path.join(home, 'shim-bin'),
           GEO_GUARD_LANG: 'en',
         },
         encoding: 'utf8',
@@ -538,7 +539,7 @@ describe('malformed hook files', () => {
 
     const r = spawnSync(
       process.execPath,
-      [cli, 'setup', '--yes', '--countries', 'RU', '--no-alias', '--cursor'],
+      [cli, 'setup', '--yes', '--countries', 'RU', '--no-shim', '--cursor'],
       {
         env: {
           ...process.env,
@@ -548,6 +549,7 @@ describe('malformed hook files', () => {
           GEO_GUARD_SHELL: 'zsh',
           GEO_GUARD_CONFIG_DIR: cfgDir,
           GEO_GUARD_CONFIG_FILE: path.join(cfgDir, 'config.json'),
+          GEO_GUARD_SHIM_DIR: path.join(home, 'shim-bin'),
           GEO_GUARD_LANG: 'en',
         },
         encoding: 'utf8',

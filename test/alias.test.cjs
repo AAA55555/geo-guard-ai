@@ -9,14 +9,20 @@ const path = require('node:path')
 const { BEGIN_MARKER, END_MARKER } = require('../dist/config')
 const {
   stripMarkedBlock,
-  findConflictingAlias,
   isPristineAliasBody,
   isGeoGuardAliasBody,
   parseAliasBody,
-  installAlias,
+  readAliasBlock,
   uninstallAliasFromFile,
   candidateRcPaths
 } = require('../dist/shell-alias')
+
+/**
+ * What is left of the alias module: geo-guard does not install aliases any more
+ * (the launch gate is a PATH shim), so what has to keep working is recognizing
+ * a block we shipped earlier — to read the user's flags out of it and to take
+ * it back out — without ever touching a line we did not write.
+ */
 
 describe('stripMarkedBlock', () => {
   test('removes marked alias block', () => {
@@ -25,47 +31,6 @@ describe('stripMarkedBlock', () => {
     assert.match(out, /before/)
     assert.match(out, /after/)
     assert.doesNotMatch(out, /geo-guard claude/)
-  })
-})
-
-describe('findConflictingAlias', () => {
-  test("detects user's own claude alias", () => {
-    const rc = 'alias claude="/usr/local/bin/claude --foo"\n'
-    assert.equal(findConflictingAlias(rc, 'zsh', 'claude'), 'alias claude="/usr/local/bin/claude --foo"')
-  })
-
-  test('ignores our own managed block and legacy line', () => {
-    const rc = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\n${END_MARKER}\n`
-    assert.equal(findConflictingAlias(rc, 'zsh', 'claude'), null)
-    assert.equal(findConflictingAlias('alias claude="geo-guard claude"\n', 'zsh', 'claude'), null)
-  })
-
-  test('no conflict when name is free', () => {
-    assert.equal(findConflictingAlias('alias gs="git status"\n', 'zsh', 'cc'), null)
-  })
-
-  test('zsh detects function and paren forms, ignores similarly-named', () => {
-    assert.ok(findConflictingAlias('claude() { /opt/claude "$@" }\n', 'zsh', 'claude'))
-    assert.ok(findConflictingAlias('function claude {\n}\n', 'zsh', 'claude'))
-    assert.equal(findConflictingAlias('alias claudex="x"\n', 'zsh', 'claude'), null)
-    assert.equal(findConflictingAlias('# alias claude="x"\n', 'zsh', 'claude'), null)
-  })
-
-  test('function NAME-suffix is NOT a false conflict (dash/dot not a boundary)', () => {
-    for (const shell of ['zsh', 'bash', 'fish', 'powershell']) {
-      assert.equal(findConflictingAlias('function claude-code {\n}\n', shell, 'claude'), null, shell)
-      assert.equal(findConflictingAlias('function claude.bak {\n}\n', shell, 'claude'), null, shell)
-      // но точное имя — коллизия
-      assert.ok(findConflictingAlias('function claude {\n}\n', shell, 'claude'), shell)
-    }
-  })
-
-  test('powershell matches alias NAME, not NAME in value', () => {
-    assert.ok(findConflictingAlias('Set-Alias claude geo-guard\n', 'powershell', 'claude'))
-    assert.ok(findConflictingAlias('function claude { }\n', 'powershell', 'claude'))
-    // claude как ЗНАЧЕНИЕ, имя — gc: это НЕ коллизия имени claude
-    assert.equal(findConflictingAlias('Set-Alias gc claude\n', 'powershell', 'claude'), null)
-    assert.equal(findConflictingAlias('Set-Alias foo claude-cli\n', 'powershell', 'claude'), null)
   })
 })
 
@@ -140,163 +105,79 @@ describe('isGeoGuardAliasBody / parseAliasBody', () => {
   })
 })
 
-describe('install/uninstall alias via GEO_GUARD_RC', () => {
+describe('readAliasBlock classifies what setup has to decide about', () => {
+  const { CURSOR_AGENT_TARGET, CLAUDE_TARGET } = require('../dist/shell-alias')
+  const { CURSOR_BEGIN_MARKER, CURSOR_END_MARKER } = require('../dist/config')
+
+  const block = (begin, body, end) => `${begin}\n${body}\n${end}\n`
+
+  test('pristine, custom and foreign are told apart', () => {
+    assert.equal(
+      readAliasBlock(block(BEGIN_MARKER, 'alias claude="geo-guard claude"', END_MARKER)).kind,
+      'pristine',
+    )
+    // `custom` is the one that matters most: its flags are what setup carries
+    // over into the shim.
+    const custom = readAliasBlock(
+      block(BEGIN_MARKER, 'alias claude="geo-guard claude --dangerously-skip-permissions"', END_MARKER),
+    )
+    assert.equal(custom.kind, 'custom')
+    assert.equal(parseAliasBody(custom.body).extraArgs, '--dangerously-skip-permissions')
+
+    assert.equal(readAliasBlock(block(BEGIN_MARKER, 'export SECRET=1', END_MARKER)).kind, 'foreign')
+  })
+
+  test('a block with no END marker is judged by its first line, and marked broken', () => {
+    const broken = readAliasBlock(
+      `${BEGIN_MARKER}\nalias claude="geo-guard claude --mine"\nexport WORK=1\n`,
+    )
+
+    assert.equal(broken.kind, 'custom')
+    assert.equal(broken.broken, true)
+  })
+
+  test('each target reads only its own block', () => {
+    const both =
+      block(BEGIN_MARKER, 'alias claude="geo-guard claude"', END_MARKER) +
+      block(CURSOR_BEGIN_MARKER, 'alias cursor-agent="geo-guard cursor-agent"', CURSOR_END_MARKER)
+
+    assert.equal(readAliasBlock(both, CLAUDE_TARGET).kind, 'pristine')
+    assert.equal(readAliasBlock(both, CURSOR_AGENT_TARGET).kind, 'pristine')
+    // The command inside is part of "this is exactly what we generate".
+    const wrong = block(CURSOR_BEGIN_MARKER, 'alias cursor-agent="geo-guard claude"', CURSOR_END_MARKER)
+    assert.equal(readAliasBlock(wrong, CURSOR_AGENT_TARGET).kind, 'custom')
+  })
+})
+
+describe('uninstallAliasFromFile', () => {
   let tmpDir
   let rcFile
-  let prevRc
 
   before(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-rc-'))
     rcFile = path.join(tmpDir, '.zshrc')
-    prevRc = process.env.GEO_GUARD_RC
-    process.env.GEO_GUARD_RC = rcFile
   })
-
   after(() => {
-    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
-    else process.env.GEO_GUARD_RC = prevRc
     fs.rmSync(tmpDir, { recursive: true, force: true })
   })
 
-  test('install throws on foreign alias, respects custom name, uninstall is clean', () => {
-    fs.writeFileSync(rcFile, 'alias claude="/opt/claude"\n')
+  test('removes only our block and keeps every other line', () => {
+    fs.writeFileSync(
+      rcFile,
+      `alias c="claude"\n\n${BEGIN_MARKER}\nalias claude="geo-guard claude"\n${END_MARKER}\nalias ll="ls -la"\n`,
+    )
 
-    assert.throws(() => installAlias('zsh', { name: 'claude' }), /AliasConflictError|Уже существует/)
+    const result = uninstallAliasFromFile(rcFile)
 
-    const res = installAlias('zsh', { name: 'cc' })
-    assert.equal(res.name, 'cc')
-    const afterInstall = fs.readFileSync(rcFile, 'utf8')
-    assert.match(afterInstall, /alias claude="\/opt\/claude"/) // чужой не тронут
-    assert.match(afterInstall, /alias cc="geo-guard claude"/)
-
-    const un = uninstallAliasFromFile(rcFile)
-    assert.equal(un.changed, true)
-    const afterUninstall = fs.readFileSync(rcFile, 'utf8')
-    assert.doesNotMatch(afterUninstall, /geo-guard claude/)
-    assert.match(afterUninstall, /alias claude="\/opt\/claude"/) // чужой всё ещё цел
-  })
-
-  test('uninstall keeps hand-edited block', () => {
-    const edited = `${BEGIN_MARKER}\nalias claude="something important"\n${END_MARKER}\n`
-    fs.writeFileSync(rcFile, edited)
-
-    const un = uninstallAliasFromFile(rcFile)
-    assert.equal(un.changed, false)
-    assert.equal(un.modified, true)
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), edited) // не тронут
-  })
-
-  test('uninstall does NOT eat file content when END marker is missing', () => {
-    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\nexport IMPORTANT_TOKEN=secret\nsource ~/.work.sh\n`
-    fs.writeFileSync(rcFile, broken)
-
-    const un = uninstallAliasFromFile(rcFile)
-    assert.equal(un.changed, false)
-    assert.equal(un.modified, true)
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), broken) // ничего не потеряно
-  })
-
-  test('install over a broken (BEGIN-without-END) block does not nest markers', () => {
-    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\nexport IMPORTANT=1\n`
-    fs.writeFileSync(rcFile, broken)
-
-    installAlias('zsh', { name: 'claude', skipConflictCheck: true })
+    assert.equal(result.changed, true)
     const after = fs.readFileSync(rcFile, 'utf8')
-
-    // ровно один BEGIN и один END, пользовательская строка цела, наш блок на месте
-    assert.equal(after.match(new RegExp(BEGIN_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')).length, 1)
-    assert.equal(after.match(new RegExp(END_MARKER.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')).length, 1)
-    assert.match(after, /export IMPORTANT=1/)
-    assert.match(after, /alias claude="geo-guard claude"/)
-
-    // и последующий uninstall теперь чисто снимает блок, сохранив export
-    const un = uninstallAliasFromFile(rcFile)
-    assert.equal(un.changed, true)
-    const cleaned = fs.readFileSync(rcFile, 'utf8')
-    assert.doesNotMatch(cleaned, /geo-guard-ai begin/)
-    assert.match(cleaned, /export IMPORTANT=1/)
-  })
-})
-
-describe('install preserves a customized alias block', () => {
-  let tmpDir
-  let rcFile
-  let prevRc
-
-  before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-keep-'))
-    rcFile = path.join(tmpDir, '.zshrc')
-    prevRc = process.env.GEO_GUARD_RC
-    process.env.GEO_GUARD_RC = rcFile
+    assert.match(after, /alias c="claude"/)
+    assert.match(after, /alias ll="ls -la"/)
+    assert.doesNotMatch(after, /geo-guard-ai begin/)
+    assert.doesNotMatch(after, /geo-guard claude/)
   })
 
-  after(() => {
-    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
-    else process.env.GEO_GUARD_RC = prevRc
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  test('keeps our alias with user flags byte-for-byte', () => {
-    const custom = `export FOO=1\n\n${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`
-    fs.writeFileSync(rcFile, custom)
-
-    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(res.preserved, 'custom')
-    assert.equal(res.name, 'claude')
-    assert.match(res.existingBody, /--dangerously-skip-permissions/)
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), custom) // файл не тронут вообще
-  })
-
-  test('reports the name from the file, not the requested one', () => {
-    const custom = `${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`
-    fs.writeFileSync(rcFile, custom)
-
-    const res = installAlias('zsh', { name: 'cc', skipConflictCheck: true })
-
-    assert.equal(res.preserved, 'custom')
-    assert.equal(res.name, 'claude')
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), custom)
-  })
-
-  test('keeps foreign content between our markers', () => {
-    const foreign = `${BEGIN_MARKER}\nalias claude="something important"\n${END_MARKER}\n`
-    fs.writeFileSync(rcFile, foreign)
-
-    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(res.preserved, 'foreign')
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), foreign)
-  })
-
-  test('overwriteCustom rewrites it on explicit request', () => {
-    const custom = `${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`
-    fs.writeFileSync(rcFile, custom)
-
-    const res = installAlias('zsh', {
-      name: 'claude',
-      skipConflictCheck: true,
-      overwriteCustom: true,
-    })
-
-    assert.equal(res.preserved, null)
-    const after = fs.readFileSync(rcFile, 'utf8')
-    assert.doesNotMatch(after, /--dangerously-skip-permissions/)
-    assert.match(after, /alias claude="geo-guard claude"/)
-  })
-
-  test('a pristine block is still regenerated', () => {
-    fs.writeFileSync(rcFile, `${BEGIN_MARKER}\nalias claude="geo-guard claude"\n${END_MARKER}\n`)
-
-    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(res.preserved, null)
-    const after = fs.readFileSync(rcFile, 'utf8')
-    const begins = after.match(/geo-guard-ai begin/g) ?? []
-    assert.equal(begins.length, 1)
-  })
-
-  test('uninstall removes our customized block, keeps neighbours', () => {
+  test('removes our block with the user’s own flags in it', () => {
     fs.writeFileSync(
       rcFile,
       `alias ll="ls -la"\n${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\nexport FOO=1\n`,
@@ -311,24 +192,43 @@ describe('install preserves a customized alias block', () => {
     assert.match(after, /alias ll="ls -la"/)
     assert.match(after, /export FOO=1/)
   })
-})
 
-describe('uninstallAliasFromFile', () => {
-  test('removes only our block and keeps other aliases', () => {
-    const { uninstallAliasFromFile } = require('../dist/shell-alias')
-    const file = path.join(os.tmpdir(), `geo-guard-rc-${process.pid}.zshrc`)
+  test('keeps a hand-edited block', () => {
+    const edited = `${BEGIN_MARKER}\nalias claude="something important"\n${END_MARKER}\n`
+    fs.writeFileSync(rcFile, edited)
+
+    const un = uninstallAliasFromFile(rcFile)
+
+    assert.equal(un.changed, false)
+    assert.equal(un.modified, true)
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), edited)
+  })
+
+  test('does NOT eat file content when the END marker is missing', () => {
+    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\nexport IMPORTANT_TOKEN=secret\nsource ~/.work.sh\n`
+    fs.writeFileSync(rcFile, broken)
+
+    const un = uninstallAliasFromFile(rcFile)
+
+    assert.equal(un.changed, false)
+    assert.equal(un.modified, true)
+    assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
+  })
+
+  test('takes the clean block even when the other one was edited by hand', () => {
+    const { CURSOR_BEGIN_MARKER, CURSOR_END_MARKER } = require('../dist/config')
     fs.writeFileSync(
-      file,
-      `alias c="claude"\n\n${BEGIN_MARKER}\nalias claude="geo-guard claude"\n${END_MARKER}\nalias ll="ls -la"\n`,
+      rcFile,
+      `${BEGIN_MARKER}\nexport SECRET=1\n${END_MARKER}\n${CURSOR_BEGIN_MARKER}\nalias cursor-agent="geo-guard cursor-agent"\n${CURSOR_END_MARKER}\n`,
     )
-    const result = uninstallAliasFromFile(file)
-    assert.equal(result.changed, true)
-    const after = fs.readFileSync(file, 'utf8')
-    assert.match(after, /alias c="claude"/)
-    assert.match(after, /alias ll="ls -la"/)
-    assert.doesNotMatch(after, /geo-guard-ai begin/)
-    assert.doesNotMatch(after, /geo-guard claude/)
-    fs.unlinkSync(file)
+
+    const res = uninstallAliasFromFile(rcFile)
+
+    assert.equal(res.changed, true)
+    assert.equal(res.modified, true, 'the foreign block must be reported as left behind')
+    const rc = fs.readFileSync(rcFile, 'utf8')
+    assert.match(rc, /export SECRET=1/)
+    assert.doesNotMatch(rc, /cursor-agent/)
   })
 })
 
@@ -365,240 +265,5 @@ describe('candidateRcPaths isolation', () => {
     const paths = candidateRcPaths()
     assert.ok(paths.includes(path.join(os.homedir(), '.zshrc')))
     assert.ok(paths.length > 1)
-  })
-})
-
-describe('installAlias with a broken END marker', () => {
-  let tmpDir
-  let rcFile
-  let prevRc
-
-  before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-broken-'))
-    rcFile = path.join(tmpDir, '.zshrc')
-    prevRc = process.env.GEO_GUARD_RC
-    process.env.GEO_GUARD_RC = rcFile
-  })
-  after(() => {
-    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
-    else process.env.GEO_GUARD_RC = prevRc
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  test('a custom body is preserved even without the END marker', () => {
-    // Раньше защита обходилась: в rc оказывались ДВЕ строки alias claude=,
-    // и наша дефолтная шла последней — в zsh побеждает она.
-    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude --my-flag"\nexport WORK=1\n`
-    fs.writeFileSync(rcFile, broken)
-
-    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(res.preserved, 'custom')
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
-  })
-
-  test('a pristine body without END is still repaired', () => {
-    const broken = `${BEGIN_MARKER}\nalias claude="geo-guard claude"\nexport IMPORTANT=1\n`
-    fs.writeFileSync(rcFile, broken)
-
-    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(res.preserved, null)
-    const after = fs.readFileSync(rcFile, 'utf8')
-    assert.equal((after.match(/geo-guard-ai begin/g) || []).length, 1)
-    assert.equal((after.match(/^alias claude=/gm) || []).length, 1)
-    assert.match(after, /export IMPORTANT=1/)
-  })
-
-  test('foreign content without END is preserved', () => {
-    const broken = `${BEGIN_MARKER}\nexport SECRET=1\n`
-    fs.writeFileSync(rcFile, broken)
-
-    const res = installAlias('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(res.preserved, 'foreign')
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), broken)
-  })
-})
-
-describe('--force-alias does not extend to foreign content', () => {
-  let tmpDir
-  let rcFile
-  let prevRc
-
-  before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-force-'))
-    rcFile = path.join(tmpDir, '.zshrc')
-    prevRc = process.env.GEO_GUARD_RC
-    process.env.GEO_GUARD_RC = rcFile
-  })
-  after(() => {
-    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
-    else process.env.GEO_GUARD_RC = prevRc
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  test('overwrites our own edited alias', () => {
-    fs.writeFileSync(
-      rcFile,
-      `${BEGIN_MARKER}\nalias claude="geo-guard claude --mine"\n${END_MARKER}\n`,
-    )
-
-    const res = installAlias('zsh', {
-      name: 'claude',
-      skipConflictCheck: true,
-      overwriteCustom: true,
-    })
-
-    assert.equal(res.preserved, null)
-    assert.match(fs.readFileSync(rcFile, 'utf8'), /alias claude="geo-guard claude"/)
-  })
-
-  test('still refuses to delete content that is not ours', () => {
-    // There is no backup of an rc file, and "overwrite the alias I edited" is
-    // not consent to delete whatever else lives between those markers.
-    const foreign = `${BEGIN_MARKER}\nexport MY_IMPORTANT=1\n${END_MARKER}\n`
-    fs.writeFileSync(rcFile, foreign)
-
-    const res = installAlias('zsh', {
-      name: 'claude',
-      skipConflictCheck: true,
-      overwriteCustom: true,
-    })
-
-    assert.equal(res.preserved, 'foreign')
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), foreign)
-  })
-})
-
-describe('the cursor-agent alias lives in its own block', () => {
-  const {
-    CURSOR_AGENT_TARGET,
-    CLAUDE_TARGET,
-    readAliasBlock,
-    installAlias: install,
-  } = require('../dist/shell-alias')
-  const { CURSOR_BEGIN_MARKER, CURSOR_END_MARKER } = require('../dist/config')
-
-  let tmpDir
-  let rcFile
-  let prevRc
-
-  before(() => {
-    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'geo-guard-cursor-alias-'))
-    rcFile = path.join(tmpDir, '.zshrc')
-    prevRc = process.env.GEO_GUARD_RC
-    process.env.GEO_GUARD_RC = rcFile
-  })
-  after(() => {
-    if (prevRc === undefined) delete process.env.GEO_GUARD_RC
-    else process.env.GEO_GUARD_RC = prevRc
-    fs.rmSync(tmpDir, { recursive: true, force: true })
-  })
-
-  const bothInstalled = () => {
-    fs.writeFileSync(rcFile, '')
-    install('zsh', { name: 'claude', skipConflictCheck: true })
-    install('zsh', {
-      name: 'cursor-agent',
-      target: CURSOR_AGENT_TARGET,
-      skipConflictCheck: true,
-    })
-    return fs.readFileSync(rcFile, 'utf8')
-  }
-
-  test('both aliases coexist, each in its own markers', () => {
-    const rc = bothInstalled()
-
-    assert.match(rc, /alias claude="geo-guard claude"/)
-    assert.match(rc, /alias cursor-agent="geo-guard cursor-agent"/)
-    assert.equal((rc.match(/geo-guard-ai begin >>>/g) || []).length, 1)
-    assert.equal((rc.match(/geo-guard-ai cursor-agent begin >>>/g) || []).length, 1)
-    assert.equal(readAliasBlock(rc, CLAUDE_TARGET).kind, 'pristine')
-    assert.equal(readAliasBlock(rc, CURSOR_AGENT_TARGET).kind, 'pristine')
-  })
-
-  test('reinstalling one does not disturb the other', () => {
-    bothInstalled()
-    const before = fs.readFileSync(rcFile, 'utf8')
-
-    install('zsh', { name: 'claude', skipConflictCheck: true })
-
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), before)
-  })
-
-  test("the claude block's own flags survive installing the cursor one", () => {
-    // Ровно жалоба, с которой всё началось, только теперь рядом ставится
-    // второй alias — он не должен переписать первый.
-    fs.writeFileSync(
-      rcFile,
-      `${BEGIN_MARKER}\nalias claude="geo-guard claude --dangerously-skip-permissions"\n${END_MARKER}\n`,
-    )
-
-    const res = install('zsh', {
-      name: 'cursor-agent',
-      target: CURSOR_AGENT_TARGET,
-      skipConflictCheck: true,
-    })
-
-    assert.equal(res.preserved, null)
-    const rc = fs.readFileSync(rcFile, 'utf8')
-    assert.match(rc, /alias claude="geo-guard claude --dangerously-skip-permissions"/)
-    assert.match(rc, /alias cursor-agent="geo-guard cursor-agent"/)
-  })
-
-  test('flags added to the cursor block are kept, exactly like the claude one', () => {
-    const custom = `${CURSOR_BEGIN_MARKER}\nalias cursor-agent="geo-guard cursor-agent --force"\n${CURSOR_END_MARKER}\n`
-    fs.writeFileSync(rcFile, custom)
-
-    const res = install('zsh', {
-      name: 'cursor-agent',
-      target: CURSOR_AGENT_TARGET,
-      skipConflictCheck: true,
-    })
-
-    assert.equal(res.preserved, 'custom')
-    assert.equal(fs.readFileSync(rcFile, 'utf8'), custom)
-  })
-
-  test('a pristine claude body is not mistaken for a pristine cursor one', () => {
-    // Оба блока разбирает один и тот же классификатор; команда внутри — часть
-    // признака «это ровно то, что мы генерируем».
-    const wrong = `${CURSOR_BEGIN_MARKER}\nalias cursor-agent="geo-guard claude"\n${CURSOR_END_MARKER}\n`
-    assert.equal(readAliasBlock(wrong, CURSOR_AGENT_TARGET).kind, 'custom')
-  })
-
-  test('uninstall removes both blocks', () => {
-    bothInstalled()
-
-    const res = uninstallAliasFromFile(rcFile)
-
-    assert.equal(res.changed, true)
-    assert.equal(res.modified, false)
-    const rc = fs.readFileSync(rcFile, 'utf8')
-    assert.doesNotMatch(rc, /geo-guard/)
-  })
-
-  test('uninstall takes the clean block even when the other was edited by hand', () => {
-    fs.writeFileSync(
-      rcFile,
-      `${BEGIN_MARKER}\nexport SECRET=1\n${END_MARKER}\n${CURSOR_BEGIN_MARKER}\nalias cursor-agent="geo-guard cursor-agent"\n${CURSOR_END_MARKER}\n`,
-    )
-
-    const res = uninstallAliasFromFile(rcFile)
-
-    assert.equal(res.changed, true)
-    assert.equal(res.modified, true, 'the foreign block must be reported as left behind')
-    const rc = fs.readFileSync(rcFile, 'utf8')
-    assert.match(rc, /export SECRET=1/)
-    assert.doesNotMatch(rc, /cursor-agent/)
-  })
-
-  test('a foreign cursor-agent alias outside our markers is a conflict', () => {
-    const rc = 'alias cursor-agent="/opt/cursor-agent --yolo"\n'
-    assert.ok(findConflictingAlias(rc, 'zsh', 'cursor-agent'))
-    // ...while our own block never is.
-    assert.equal(findConflictingAlias(bothInstalled(), 'zsh', 'cursor-agent'), null)
-    assert.equal(findConflictingAlias(bothInstalled(), 'zsh', 'claude'), null)
   })
 })

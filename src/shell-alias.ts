@@ -10,6 +10,18 @@ import {
 } from './config'
 import { msg } from './i18n'
 
+/**
+ * Shells, rc files, and what is left of the alias gate.
+ *
+ * geo-guard no longer *installs* aliases — the launch gate is a PATH shim (see
+ * `shim.ts`), which an alias could never match: an alias is invisible to
+ * `\claude`, to `command claude`, to a Makefile, to a script, and to every
+ * shell whose rc we did not write. What stays here is the ability to recognize
+ * an alias block we shipped earlier and take it back out, so an upgrade does
+ * not leave a second, weaker gate behind — plus the shell/rc-path knowledge the
+ * PATH module builds on.
+ */
+
 export type ShellName = 'zsh' | 'bash' | 'fish' | 'powershell'
 
 export const DEFAULT_ALIAS_NAME = 'claude'
@@ -60,13 +72,7 @@ export const ALIAS_TARGETS: readonly AliasTarget[] = Object.freeze([
   CURSOR_AGENT_TARGET,
 ])
 
-/** Alias body for a specific shell, name and wrapped command. */
-function aliasBody(shell: ShellName, name: string, command: string): string {
-  if (shell === 'powershell') return `function ${name} { geo-guard ${command} @args }`
-  return `alias ${name}="geo-guard ${command}"`
-}
-
-/** Our previous (unmanaged) variants — cleaned up on reinstall/uninstall. */
+/** Our previous (unmanaged) variants — cleaned up on setup/uninstall. */
 function legacyOurLines(name: string, command: string): Set<string> {
   const lines = new Set([
     `alias ${name}="geo-guard ${command}"`,
@@ -81,8 +87,8 @@ function legacyOurLines(name: string, command: string): Set<string> {
 }
 
 /**
- * Bodies we generate ourselves, byte-for-byte (for any alias name).
- * Only such a block may be regenerated on install — anything else is the user's.
+ * Bodies we generated ourselves, byte-for-byte (for any alias name).
+ * Only such a block is ours to remove — anything else is the user's.
  */
 function pristineBodyPatterns(command: string): RegExp[] {
   const c = escapeRe(command)
@@ -95,7 +101,8 @@ function pristineBodyPatterns(command: string): RegExp[] {
 /**
  * Our alias *with the user's own flags added* — e.g.
  * `alias claude="geo-guard claude --dangerously-skip-permissions"`.
- * Still ours (uninstall may remove it), but install must not rewrite it.
+ * Still ours to remove — and the flags in it are what setup carries over to the
+ * shim, so the user does not lose them in the move.
  *
  * No `.` and no open-ended `[^"']`: without the `m` flag `$` is end-of-input,
  * but a negated class would happily swallow newlines and match a body that has
@@ -106,19 +113,6 @@ const FUNCTION_BODY_RE = /^function\s+([\w.-]+)[ \t]*\{[ \t]*geo-guard[ \t]+([\w
 
 function escapeRe(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-export class AliasConflictError extends Error {
-  readonly aliasName: string
-  readonly existing: string
-  readonly file: string
-  constructor(aliasName: string, existing: string, file: string) {
-    super(msg().aliasAlreadyExists(aliasName, existing))
-    this.name = 'AliasConflictError'
-    this.aliasName = aliasName
-    this.existing = existing
-    this.file = file
-  }
 }
 
 export function listSupportedShells(): ShellName[] {
@@ -148,6 +142,17 @@ export function detectShell(): ShellName {
 
   return process.platform === 'win32' ? 'powershell' : 'zsh'
 }
+
+/**
+ * The files a login bash reads, in the order bash itself tries them: it runs
+ * the FIRST one that exists and ignores the rest. Anything we append has to go
+ * into that same file, and creating an earlier one shadows the rest.
+ */
+export const BASH_LOGIN_FILE_NAMES: readonly string[] = Object.freeze([
+  '.bash_profile',
+  '.bash_login',
+  '.profile',
+])
 
 export function rcPathForShell(shell: ShellName): string {
   const home = os.homedir()
@@ -193,7 +198,10 @@ export function candidateRcPaths(): string[] {
   const paths = [
     path.join(home, '.zshrc'),
     path.join(home, '.bashrc'),
-    path.join(home, '.bash_profile'),
+    // Every login file bash might have picked, not just the one it would pick
+    // today: which of them holds our block depends on what existed at install
+    // time, and a block we cannot find is a block we can never remove.
+    ...BASH_LOGIN_FILE_NAMES.map(name => path.join(home, name)),
     path.join(home, '.config', 'fish', 'config.fish'),
     path.join(home, 'Documents', 'PowerShell', 'Microsoft.PowerShell_profile.ps1'),
     path.join(home, 'Documents', 'WindowsPowerShell', 'Microsoft.PowerShell_profile.ps1'),
@@ -203,39 +211,38 @@ export function candidateRcPaths(): string[] {
   return [...new Set(paths.map(p => path.normalize(p)))]
 }
 
-export function aliasSnippet(
-  shell: ShellName,
-  name: string = DEFAULT_ALIAS_NAME,
-  target: AliasTarget = CLAUDE_TARGET,
-): string {
-  return `${target.begin}\n${aliasBody(shell, name, target.command)}\n${target.end}\n`
+/**
+ * Removes one marker block, whatever it holds. Shared with the PATH module:
+ * both write marker blocks into the same rc files, and two implementations of
+ * "cut between BEGIN and END" would be two chances to eat a line we didn't write.
+ */
+export function stripBlockBetween(content: string, begin: string, end: string): string {
+  const from = content.indexOf(begin)
+  if (from === -1) return content
+  const to = content.indexOf(end, from)
+  // No END — the block was broken by hand. Do NOT cut to the end of the file
+  // (otherwise we'd wipe foreign content below). Leave as is; uninstallAliasFromFile handles it.
+  if (to === -1) return content
+  const after = to + end.length
+  const stripped = (content.slice(0, from) + content.slice(after)).replace(/\n{3,}/g, '\n\n')
+  // We append our block after a blank separator line, so removing it leaves that
+  // line behind at the end of the file. Trailing blank lines carry no meaning,
+  // and a file that comes back byte-for-byte as it was is worth the two lines
+  // it takes to say so.
+  return stripped.replace(/\n{2,}$/, '\n')
+}
+
+/** The body inside a marker block (trimmed), or null when there is no block. */
+export function blockBodyBetween(content: string, begin: string, end: string): string | null {
+  const from = content.indexOf(begin)
+  if (from === -1) return null
+  const to = content.indexOf(end, from)
+  if (to === -1) return null
+  return content.slice(from + begin.length, to).trim()
 }
 
 export function stripMarkedBlock(content: string, target: AliasTarget = CLAUDE_TARGET): string {
-  const begin = content.indexOf(target.begin)
-  if (begin === -1) return content
-  const end = content.indexOf(target.end, begin)
-  // No END — the block was broken by hand. Do NOT cut to the end of the file
-  // (otherwise we'd wipe foreign content below). Leave as is; uninstallAliasFromFile handles it.
-  if (end === -1) return content
-  const after = end + target.end.length
-  return (content.slice(0, begin) + content.slice(after)).replace(/\n{3,}/g, '\n\n')
-}
-
-/**
- * Removes an orphan BEGIN marker line with no matching END (block broken by hand).
- * Needed on install: otherwise a new block is appended below and we get a nested BEGIN,
- * with the user's content ending up inside the marker span. The body is removed separately
- * via stripUnmanagedOurAlias. If a matching END is absent/present — we don't touch it.
- */
-function stripOrphanBeginMarker(content: string, target: AliasTarget): string {
-  const begin = content.indexOf(target.begin)
-  if (begin === -1) return content
-  if (content.indexOf(target.end, begin) !== -1) return content
-  return content
-    .split('\n')
-    .filter(line => line.trim() !== target.begin)
-    .join('\n')
+  return stripBlockBetween(content, target.begin, target.end)
 }
 
 /** The body inside the marker block (trimmed), or null if there's no block. */
@@ -243,11 +250,7 @@ export function markedBlockBody(
   content: string,
   target: AliasTarget = CLAUDE_TARGET,
 ): string | null {
-  const begin = content.indexOf(target.begin)
-  if (begin === -1) return null
-  const end = content.indexOf(target.end, begin)
-  if (end === -1) return null
-  return content.slice(begin + target.begin.length, end).trim()
+  return blockBodyBetween(content, target.begin, target.end)
 }
 
 /** true — if the block body is exactly what we generated (not edited by hand). */
@@ -288,8 +291,7 @@ export function parseAliasBody(body: string): ParsedAliasBody | null {
 
 /**
  * true — the body is ours, whether pristine or carrying the user's own flags.
- * Wider than isPristineAliasBody on purpose: uninstall may remove such a block,
- * install may not overwrite it.
+ * Wider than isPristineAliasBody on purpose: both are ours to remove.
  */
 export function isGeoGuardAliasBody(body: string): boolean {
   return parseAliasBody(body) !== null
@@ -302,63 +304,6 @@ function stripUnmanagedOurAlias(content: string, name: string, command: string):
     .split('\n')
     .filter(line => !ours.has(line.trim()))
     .join('\n')
-}
-
-/** Everything of ours, whatever target it belongs to, removed from a copy. */
-function withoutAnythingOfOurs(content: string, name: string): string {
-  let out = content
-  for (const target of ALIAS_TARGETS) {
-    out = stripUnmanagedOurAlias(stripMarkedBlock(out, target), name, target.command)
-  }
-  return out
-}
-
-/** Regex detecting an alias/function with the given name for a shell. */
-function aliasDefRegex(shell: ShellName, name: string): RegExp {
-  const n = escapeRe(name)
-  // Function name terminator: space / { / ( / end of line.
-  // NOT \b — there '-' and '.' count as a boundary, and 'claude' would falsely match 'function claude-code'.
-  const fnEnd = '(?=\\s|\\{|\\(|$)'
-  if (shell === 'powershell') {
-    // The name is the first positional argument (or -Name), NOT the value.
-    // `Set-Alias gc claude` must not be treated as a collision on the name `claude`.
-    return new RegExp(
-      `^\\s*(function\\s+${n}${fnEnd}|(Set-Alias|New-Alias|sal|nal)\\b\\s+(-Name\\s+)?["']?${n}["']?(\\s|$))`,
-      'i',
-    )
-  }
-  if (shell === 'fish') {
-    return new RegExp(`^\\s*(alias\\s+(-{1,2}[^\\s]+\\s+)*${n}[\\s=]|function\\s+${n}${fnEnd})`)
-  }
-  // zsh/bash: alias claude=…, alias -g claude=…, function claude {…}, claude() {…}
-  return new RegExp(`^\\s*(alias\\s+(-g\\s+)?${n}=|function\\s+${n}${fnEnd}|${n}\\s*\\(\\s*\\))`)
-}
-
-/** Finds a FOREIGN alias named `name` (outside our markers and unmanaged lines). */
-export function findConflictingAlias(
-  content: string,
-  shell: ShellName,
-  name: string,
-): string | null {
-  // Every block of ours comes out first — an alias we installed is never a
-  // collision with the alias we are about to install.
-  const outside = withoutAnythingOfOurs(content, name)
-  const re = aliasDefRegex(shell, name)
-  for (const line of outside.split('\n')) {
-    if (re.test(line)) return line.trim()
-  }
-  return null
-}
-
-/** Whether a foreign alias named `name` exists in the current shell's rc. */
-export function aliasConflictFor(
-  shell: ShellName,
-  name: string,
-): { file: string; existing: string } | null {
-  const file = rcPathForShellResolved(shell)
-  if (!fs.existsSync(file)) return null
-  const existing = findConflictingAlias(fs.readFileSync(file, 'utf8'), shell, name)
-  return existing ? { file, existing } : null
 }
 
 /**
@@ -427,49 +372,21 @@ export function readAliasBlock(
 }
 
 /**
- * The existing block we must not touch, or null when it's ours to regenerate.
- *
- * A block whose END marker someone deleted is only repairable when its body is
- * one we generated: stripUnmanagedOurAlias knows how to remove exactly that
- * line. Anything else stays put — repairing it would append a second
- * `alias claude=…` below the user's own, which in zsh/bash wins, silently
- * dropping their flags.
- */
-function preservedBlock(
-  content: string,
-  overwriteCustom: boolean,
-  target: AliasTarget,
-): { kind: PreservedAliasKind; body: string } | null {
-  const block = readAliasBlock(content, target)
-  if (block.kind === 'none' || block.kind === 'pristine') return null
-
-  // `--force-alias` means "yes, replace the alias I edited" — it does not mean
-  // "delete whatever you find between those markers". Content we cannot
-  // recognize as ours is never overwritten: there is no backup of an rc file,
-  // and the whole of this package refuses to destroy data it did not write.
-  if (overwriteCustom && block.kind === 'custom') return null
-  return { kind: block.kind, body: block.body }
-}
-
-/**
- * Why an existing block was left alone:
- * - `custom`  — our alias plus the user's own flags;
- * - `foreign` — something else entirely between our markers.
- */
-export type PreservedAliasKind = 'custom' | 'foreign'
-
-/**
- * Refuses the install when the rc cannot be written. setup writes the alias
- * last, so without this a read-only rc leaves the config and both hooks in
+ * Refuses the install when an rc file cannot be written. setup writes the shell
+ * files last, so without this a read-only rc leaves the config and both hooks in
  * place and only the final step failing — a half-install the user has to undo
  * by hand.
+ *
+ * Takes the file rather than a shell: the PATH entry and the alias blocks we
+ * clean up do not always live in the same rc (bash keeps the entry in ~/.bashrc
+ * and the alias could be in ~/.bash_profile), and probing the wrong file would
+ * be a check that proves nothing.
  *
  * Only a clear permission error counts. On Windows accessSync cannot see ACL
  * denials, and a probe failing for some other reason must not block an install
  * that would have worked.
  */
-export function assertAliasWritable(shell: ShellName = detectShell()): void {
-  const file = rcPathForShellResolved(shell)
+export function assertRcWritable(file: string): void {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     const target = fs.existsSync(file) ? file : path.dirname(file)
@@ -479,101 +396,6 @@ export function assertAliasWritable(shell: ShellName = detectShell()): void {
     if (code === 'EACCES' || code === 'EPERM' || code === 'EROFS') {
       throw new Error(msg().rcNotWritable(file))
     }
-  }
-}
-
-export type InstallAliasResult = {
-  shell: ShellName
-  file: string
-  name: string
-  snippet: string
-  /** null — the block was written; otherwise the file was not touched at all. */
-  preserved: PreservedAliasKind | null
-  /** The body we kept, when preserved. */
-  existingBody: string | null
-}
-
-/**
- * Writes the alias to the rc. Name defaults to `claude`.
- *
- * An existing block is regenerated only if its body is exactly what we generate.
- * A body the user has edited (say, `geo-guard claude --dangerously-skip-permissions`)
- * is kept as is and the file is not touched — unless `overwriteCustom` is set.
- *
- * If a foreign alias with this name is found and `skipConflictCheck` is not set —
- * throws AliasConflictError.
- */
-export function installAlias(
-  shell: ShellName = detectShell(),
-  options: Readonly<{
-    name?: string
-    skipConflictCheck?: boolean
-    overwriteCustom?: boolean
-    target?: AliasTarget
-  }> = {},
-): InstallAliasResult {
-  const target = options.target ?? CLAUDE_TARGET
-  const name = options.name ?? target.defaultName
-  const file = rcPathForShellResolved(shell)
-  fs.mkdirSync(path.dirname(file), { recursive: true })
-
-  const original = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : ''
-
-  const preserved = preservedBlock(original, options.overwriteCustom ?? false, target)
-  if (preserved) {
-    const parsed = parseAliasBody(preserved.body)
-    return {
-      shell,
-      file,
-      // For our own customized block the name in the file is the truth.
-      name: parsed?.name ?? name,
-      snippet: '',
-      preserved: preserved.kind,
-      existingBody: preserved.body,
-    }
-  }
-
-  const withoutOurs = stripMarkedBlock(original, target)
-  let content = stripOrphanBeginMarker(withoutOurs, target)
-  content = stripUnmanagedOurAlias(content, name, target.command)
-
-  if (!options.skipConflictCheck) {
-    const conflict = findConflictingAlias(content, shell, name)
-    if (conflict) throw new AliasConflictError(name, conflict, file)
-  }
-
-  // Already exactly right: don't rewrite the file. Regenerating would move this
-  // block to the bottom — so with two of them, every `setup` run would swap
-  // their order — and stripMarkedBlock collapses blank runs across the whole
-  // file, which is not ours to reformat.
-  const block = readAliasBlock(original, target)
-  const upToDate =
-    block.kind === 'pristine' &&
-    !block.broken &&
-    block.body === aliasBody(shell, name, target.command) &&
-    content === withoutOurs
-  if (upToDate) {
-    return {
-      shell,
-      file,
-      name,
-      snippet: aliasSnippet(shell, name, target).trim(),
-      preserved: null,
-      existingBody: null,
-    }
-  }
-
-  if (content.length && !content.endsWith('\n')) content += '\n'
-  content += `\n${aliasSnippet(shell, name, target)}`
-  fs.writeFileSync(file, content)
-
-  return {
-    shell,
-    file,
-    name,
-    snippet: aliasSnippet(shell, name, target).trim(),
-    preserved: null,
-    existingBody: null,
   }
 }
 
@@ -620,13 +442,6 @@ export function uninstallAliasFromFile(file: string): UninstallAliasFileResult {
   }
   fs.writeFileSync(file, after)
   return { file, changed: true, modified }
-}
-
-export function uninstallAlias(shell: ShellName = detectShell()): UninstallAliasFileResult & {
-  shell: ShellName
-} {
-  const file = rcPathForShellResolved(shell)
-  return { shell, ...uninstallAliasFromFile(file) }
 }
 
 /** Strips only our blocks/lines across all known rc files. */

@@ -1,6 +1,4 @@
 import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 
 import {
   writeConfig,
@@ -13,103 +11,72 @@ import {
 import { assertClaudeHooksInstallable, installClaudeHook } from './claude-hook'
 import { assertCursorHooksInstallable, cursorDirExists, installCursorHook } from './cursor-hook'
 import {
-  aliasConflictFor,
-  assertAliasWritable,
+  ALIAS_TARGETS,
+  assertRcWritable,
+  candidateRcPaths,
+  CLAUDE_TARGET,
   CURSOR_AGENT_TARGET,
   detectShell,
-  installAlias,
   listSupportedShells,
-  type InstallAliasResult,
   normalizeShellName,
-  DEFAULT_ALIAS_NAME,
+  parseAliasBody,
+  readAliasBlock,
+  uninstallAliasesEverywhere,
+  type AliasTargetId,
   type ShellName,
 } from './shell-alias'
+import {
+  installBashLoginPathEntry,
+  installPathEntry,
+  pathRcPathForShell,
+  shellsToInstall,
+} from './shell-path'
+import {
+  installShim,
+  readShim,
+  resolveGeoGuardBin,
+  shimDir,
+  type InstallShimResult,
+  type ShimTarget,
+} from './shim'
+import { installUserPathEntry } from './windows-path'
 import { commandExists } from './resolve-bin'
-import { valueAt } from './args'
-import { withPromptSession, type PromptApi } from './prompt'
+import { rawValueAt, valueAt } from './args'
+import { withPromptSession } from './prompt'
 import { msg } from './i18n'
 
 export type SetupOptions = Readonly<{
   yes: boolean
   countries: string | null
+  /** Older one-shell spelling of `--shells`. */
   shell: string | null
+  shells: string | null
   hook: boolean | null
-  alias: boolean | null
-  cursorAlias: boolean | null
-  aliasName: string | null
-  forceAlias: boolean
+  shim: boolean | null
+  cursorShim: boolean | null
+  forceShim: boolean
   cursor: boolean | null
   claudeCountries: string | null
   cursorCountries: string | null
+  /** Flags to bake into the claude shim, e.g. `--dangerously-skip-permissions`. */
+  claudeArgs: string | null
+  cursorArgs: string | null
 }>
 
-/** Alias name candidates for a collision in non-interactive mode. */
-const FALLBACK_ALIAS_NAMES = [DEFAULT_ALIAS_NAME, 'cc', 'ccg', 'geoclaude']
-
-/** First free name among the candidates (desired first) or null. */
-function pickFreeAliasName(shell: ShellName, desired: string): string | null {
-  const candidates = [desired, ...FALLBACK_ALIAS_NAMES]
-  const seen = new Set<string>()
-  for (const name of candidates) {
-    if (seen.has(name)) continue
-    seen.add(name)
-    if (!aliasConflictFor(shell, name)) return name
-  }
-  return null
-}
-
 /**
- * Interactively picks a free alias name.
- * Returns the name, or null if the user chose to skip the alias.
+ * The alias flags, and what replaced them.
+ *
+ * Kept as a refusal rather than quietly dropped: `geo-guard setup --no-alias`
+ * in someone's script used to mean "do not touch my shell", and letting it
+ * through as an unknown-argument error would say nothing about where that
+ * behaviour went.
  */
-async function resolveAliasNameInteractive(
-  prompt: PromptApi,
-  shell: ShellName,
-  desired: string,
-): Promise<string | null> {
-  let name = desired
-  let conflict = aliasConflictFor(shell, name)
-  while (conflict) {
-    console.log(msg().aliasConflictHeader(conflict.file, name))
-    console.log(`      ${conflict.existing}`)
-    console.log(msg().aliasWontTouch())
-    const suggestion = name === DEFAULT_ALIAS_NAME ? 'cc' : ''
-    const answer = await prompt.ask(msg().promptAliasName(), {
-      defaultValue: suggestion,
-    })
-    if (!answer) return null
-    name = answer
-    conflict = aliasConflictFor(shell, name)
-  }
-  return name
-}
-
-/** `source` is meaningless in PowerShell — there the profile is re-read with a dot. */
-function reloadHint(file: string): string {
-  if (file.toLowerCase().endsWith('.ps1')) return msg().reloadRcPowershell(file)
-  return msg().reloadRc(file)
-}
-
-/** Reports an alias block we deliberately left alone (custom flags or foreign content). */
-function reportPreservedAlias(alias: InstallAliasResult, requestedName: string): void {
-  if (alias.preserved === 'custom') {
-    console.log(msg().aliasKeptCustom(alias.file))
-  } else {
-    console.log(msg().aliasKeptForeign(alias.file))
-  }
-  for (const line of (alias.existingBody ?? '').split('\n')) {
-    console.log(`   ${line}`)
-  }
-  // --force-alias replaces an alias of ours; it does not delete foreign
-  // content, so offering it there would be advice we refuse to carry out.
-  if (alias.preserved === 'custom') {
-    console.log(msg().aliasForceHint())
-  } else {
-    console.log(msg().aliasFixByHand())
-  }
-  if (alias.preserved === 'custom' && alias.name !== requestedName) {
-    console.log(msg().aliasNameChangeSkipped(alias.name, requestedName))
-  }
+const RETIRED_ALIAS_FLAGS: Readonly<Record<string, string>> = {
+  '--alias': '--shim',
+  '--no-alias': '--no-shim',
+  '--cursor-alias': '--cursor-shim',
+  '--no-cursor-alias': '--no-cursor-shim',
+  '--force-alias': '--force-shim',
 }
 
 export function parseArgs(argv: string[]): SetupOptions {
@@ -117,26 +84,30 @@ export function parseArgs(argv: string[]): SetupOptions {
     yes: boolean
     countries: string | null
     shell: string | null
+    shells: string | null
     hook: boolean | null
-    alias: boolean | null
-    cursorAlias: boolean | null
-    aliasName: string | null
-    forceAlias: boolean
+    shim: boolean | null
+    cursorShim: boolean | null
+    forceShim: boolean
     cursor: boolean | null
     claudeCountries: string | null
     cursorCountries: string | null
+    claudeArgs: string | null
+    cursorArgs: string | null
   } = {
     yes: false,
     countries: null,
     shell: null,
+    shells: null,
     hook: null,
-    alias: null,
-    cursorAlias: null,
-    aliasName: null,
-    forceAlias: false,
+    shim: null,
+    cursorShim: null,
+    forceShim: false,
     cursor: null,
     claudeCountries: null,
     cursorCountries: null,
+    claudeArgs: null,
+    cursorArgs: null,
   }
 
   for (let i = 0; i < argv.length; i++) {
@@ -149,6 +120,21 @@ export function parseArgs(argv: string[]): SetupOptions {
       return value
     }
 
+    /** For a value that is itself a flag, e.g. --claude-args --verbose. */
+    const rawValueFor = (name: string): string => {
+      const { value, next } = rawValueAt(argv, i, name)
+      i = next
+      return value
+    }
+
+    const retired = RETIRED_ALIAS_FLAGS[arg]
+    if (retired !== undefined) {
+      throw new Error(msg().retiredAliasFlag(arg, retired))
+    }
+    if (arg === '--alias-name' || arg.startsWith('--alias-name=')) {
+      throw new Error(msg().retiredAliasNameFlag('--alias-name'))
+    }
+
     if (arg === '--yes' || arg === '-y') {
       opts.yes = true
     } else if (arg === '--countries' || arg === '-c') {
@@ -159,32 +145,40 @@ export function parseArgs(argv: string[]): SetupOptions {
       opts.shell = valueFor('--shell')
     } else if (arg.startsWith('--shell=')) {
       opts.shell = arg.slice('--shell='.length)
-    } else if (arg === '--alias-name') {
-      opts.aliasName = valueFor('--alias-name')
-    } else if (arg.startsWith('--alias-name=')) {
-      opts.aliasName = arg.slice('--alias-name='.length)
+    } else if (arg === '--shells') {
+      opts.shells = valueFor('--shells')
+    } else if (arg.startsWith('--shells=')) {
+      opts.shells = arg.slice('--shells='.length)
     } else if (arg === '--claude-countries') {
       opts.claudeCountries = valueFor('--claude-countries')
     } else if (arg.startsWith('--claude-countries=')) {
       opts.claudeCountries = arg.slice('--claude-countries='.length)
+    } else if (arg === '--claude-args') {
+      opts.claudeArgs = rawValueFor('--claude-args')
+    } else if (arg.startsWith('--claude-args=')) {
+      opts.claudeArgs = arg.slice('--claude-args='.length)
+    } else if (arg === '--cursor-args') {
+      opts.cursorArgs = rawValueFor('--cursor-args')
+    } else if (arg.startsWith('--cursor-args=')) {
+      opts.cursorArgs = arg.slice('--cursor-args='.length)
     } else if (arg === '--cursor-countries') {
       opts.cursorCountries = valueFor('--cursor-countries')
     } else if (arg.startsWith('--cursor-countries=')) {
       opts.cursorCountries = arg.slice('--cursor-countries='.length)
-    } else if (arg === '--force-alias') {
-      opts.forceAlias = true
+    } else if (arg === '--force-shim') {
+      opts.forceShim = true
     } else if (arg === '--no-hook') {
       opts.hook = false
     } else if (arg === '--hook') {
       opts.hook = true
-    } else if (arg === '--no-alias') {
-      opts.alias = false
-    } else if (arg === '--alias') {
-      opts.alias = true
-    } else if (arg === '--no-cursor-alias') {
-      opts.cursorAlias = false
-    } else if (arg === '--cursor-alias') {
-      opts.cursorAlias = true
+    } else if (arg === '--no-shim') {
+      opts.shim = false
+    } else if (arg === '--shim') {
+      opts.shim = true
+    } else if (arg === '--no-cursor-shim') {
+      opts.cursorShim = false
+    } else if (arg === '--cursor-shim') {
+      opts.cursorShim = true
     } else if (arg === '--no-cursor') {
       opts.cursor = false
     } else if (arg === '--cursor') {
@@ -197,42 +191,191 @@ export function parseArgs(argv: string[]): SetupOptions {
   return opts
 }
 
+/**
+ * `zsh,bash`, a single name, or `all` → the shells whose rc gets the PATH entry.
+ * `all` is every shell actually installed here, which is what a user who lives
+ * in more than one shell wants: the gate is only in effect where PATH says so.
+ */
+function resolveShells(raw: string, fallback: ShellName): ShellName[] {
+  const list = listSupportedShells().join(', ')
+  if (raw.trim().toLowerCase() === 'all') return shellsToInstall('all')
+
+  const shells: ShellName[] = []
+  for (const part of raw.split(',')) {
+    const name = part.trim()
+    if (!name) continue
+    const normalized = normalizeShellName(name)
+    if (!normalized) throw new Error(msg().unsupportedShellWithList(name, list))
+    if (!shells.includes(normalized)) shells.push(normalized)
+  }
+
+  if (shells.length === 0) return [fallback]
+  return shells
+}
+
+/**
+ * The user's own flags, read out of the alias blocks we are about to remove.
+ *
+ * This is the whole of the migration: someone whose rc says
+ * `alias claude="geo-guard claude --dangerously-skip-permissions"` must not
+ * lose that flag because we changed how the gate is built.
+ */
+function aliasFlagsInRcFiles(): Map<AliasTargetId, string> {
+  const flags = new Map<AliasTargetId, string>()
+
+  for (const file of candidateRcPaths()) {
+    let content: string
+    try {
+      content = fs.readFileSync(file, 'utf8')
+    } catch {
+      continue
+    }
+    for (const target of ALIAS_TARGETS) {
+      if (flags.has(target.id)) continue
+      const block = readAliasBlock(content, target)
+      // Only `custom` carries flags — a pristine block has none, and a foreign
+      // one is not ours to read anything out of.
+      if (block.kind !== 'custom') continue
+      const extraArgs = parseAliasBody(block.body)?.extraArgs
+      if (extraArgs) flags.set(target.id, extraArgs)
+    }
+  }
+
+  return flags
+}
+
+/**
+ * Flags go into the shim's `exec` line verbatim, so a newline there would split
+ * the file into something we no longer generated — and could no longer read
+ * back. Everything else is the user's own shell syntax and none of our business.
+ */
+function validatedShimArgs(raw: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/[\u0000-\u001f\u007f]/.test(raw)) throw new Error(msg().invalidShimArgs(raw))
+  return raw.trim()
+}
+
+/**
+ * The flags the shim for a target should carry, and who decided them:
+ *
+ * 1. an explicit `--claude-args` / `--cursor-args` (an empty value clears them);
+ * 2. what the shim already carries — so a reinstall, a package update or a
+ *    re-run to change countries keeps flags the user put there;
+ * 3. what our alias block had, for the one run that replaces it;
+ * 4. nothing.
+ *
+ * Only (1) is allowed to overwrite flags already in place; the rest either
+ * agree with the file or fill it in for the first time.
+ */
+function shimArgsFor(
+  target: ShimTarget,
+  option: string | null,
+  carried: ReadonlyMap<AliasTargetId, string>,
+): Readonly<{ extraArgs: string; fromOption: boolean }> {
+  if (option !== null) return { extraArgs: validatedShimArgs(option), fromOption: true }
+
+  const existing = readShim(target)
+  // `parsed` matters: a shim of ours whose exec line someone rewrote tells us
+  // nothing about what it runs, so its empty extraArgs is not an answer.
+  if (existing.parsed && existing.extraArgs) {
+    return { extraArgs: existing.extraArgs, fromOption: false }
+  }
+
+  return { extraArgs: carried.get(target.id) ?? '', fromOption: false }
+}
+
+/** `source` is meaningless in PowerShell — there the profile is re-read with a dot. */
+function reloadHint(file: string): string {
+  if (file.toLowerCase().endsWith('.ps1')) return msg().reloadRcPowershell(file)
+  return msg().reloadRc(file)
+}
+
+/**
+ * One shim: installed, already right, or deliberately left alone.
+ *
+ * `fromOption` only changes how the flags line reads — "kept" is a claim about
+ * where they came from, and it would be untrue for flags the user just asked
+ * for on the command line.
+ */
+function reportShim(result: InstallShimResult, fromOption: boolean): void {
+  if (result.preserved === 'foreign') {
+    console.log(msg().shimKeptForeign(result.file))
+    return
+  }
+  if (result.preserved === 'custom') {
+    console.log(msg().shimKeptCustom(result.file))
+    if (result.extraArgs) console.log(msg().shimFlagsKept(result.extraArgs))
+    console.log(msg().shimForceHint())
+    return
+  }
+
+  if (result.changed) {
+    console.log(msg().shimInstalled(result.file))
+  } else {
+    console.log(msg().shimUpToDate(result.file))
+  }
+  if (result.extraArgs) {
+    if (fromOption) console.log(msg().shimFlagsSet(result.extraArgs))
+    else console.log(msg().shimFlagsKept(result.extraArgs))
+  }
+}
+
+/**
+ * The user PATH entry on Windows, reported like every other step.
+ *
+ * A failure here is not a failed install: the PowerShell profile is already
+ * written and the gate works there. Saying so, and saying what to add by hand,
+ * beats both a crash and a silent half-gate.
+ */
+function installUserPath(): void {
+  const result = installUserPathEntry(shimDir())
+  if (result.outcome === 'added') {
+    console.log(msg().userPathInstalled(result.dir))
+    return
+  }
+  if (result.outcome === 'already-present') {
+    console.log(msg().userPathAlreadyPresent(result.dir))
+    return
+  }
+  console.log(msg().userPathUnavailable(result.dir, result.detail))
+}
+
 export async function runSetup(argv: string[] = []): Promise<void> {
   const opts = parseArgs(argv)
   const detectedShell = detectShell()
 
   let countries = opts.countries
   let wantHook = opts.hook
-  let wantAlias = opts.alias
-  let wantCursorAlias = opts.cursorAlias
+  let wantShim = opts.shim
+  let wantCursorShim = opts.cursorShim
   let wantCursor = opts.cursor
-  let shell: ShellName = detectedShell
-  const requestedAliasName: string = opts.aliasName ?? DEFAULT_ALIAS_NAME
-  let aliasName: string = requestedAliasName
-  let aliasSkipReason = ''
   let claudeCountries = opts.claudeCountries
   let cursorCountries = opts.cursorCountries
-  // Aliasing a command nobody has installed would replace the shell's honest
+  let claudeArgs = opts.claudeArgs
+  let cursorArgs = opts.cursorArgs
+  // Read (never written) before the questions: the flags a shim would end up
+  // with are the default we offer, and that answer can come from an alias block
+  // this very run is about to remove.
+  const carriedFlags = aliasFlagsInRcFiles()
+  // Gating a command nobody has installed would replace the shell's honest
   // "command not found" with our own "binary not found".
   const cursorAgentPresent = commandExists(CURSOR_AGENT_TARGET.command)
 
-  // `--no-alias` is the answer to "stay out of my rc file", so it covers both
-  // aliases — unless the cursor one was asked for by name.
-  if (opts.alias === false && opts.cursorAlias === null) wantCursorAlias = false
+  // `--no-shim` is the answer to "stay off my PATH", so it covers both targets —
+  // unless the cursor one was asked for by name.
+  if (opts.shim === false && opts.cursorShim === null) wantCursorShim = false
 
-  // The alias name goes into the rc as `alias <name>=…` — spaces and special
-  // characters are not allowed, otherwise the line breaks. Allow letters/digits/_/-/.
-  if (!/^[\w.-]+$/.test(aliasName)) {
-    throw new Error(msg().invalidAliasName(aliasName))
-  }
+  // `--shell zsh` is the older spelling of `--shells zsh`; null means "nobody
+  // said", which is a question in an interactive run and the current shell in a
+  // `--yes` one.
+  const shellSpec = opts.shells ?? opts.shell
+  let shells: ShellName[] | null = null
+  if (shellSpec !== null) shells = resolveShells(shellSpec, detectedShell)
 
-  if (opts.shell) {
-    const normalized = normalizeShellName(opts.shell)
-    if (!normalized) {
-      throw new Error(msg().unsupportedShellWithList(opts.shell, listSupportedShells().join(', ')))
-    }
-    shell = normalized
-  }
+  // Rejected here rather than at install time: a bad value must not leave the
+  // config and both hooks already written.
+  if (claudeArgs !== null) validatedShimArgs(claudeArgs)
+  if (cursorArgs !== null) validatedShimArgs(cursorArgs)
 
   if (!opts.yes) {
     await withPromptSession(async prompt => {
@@ -263,54 +406,57 @@ export async function runSetup(argv: string[] = []): Promise<void> {
           })
         }
       }
-      if (wantAlias === null) {
-        wantAlias = await prompt.askYesNo(msg().promptAddAlias(aliasName, shell, 'claude'), {
+      if (wantShim === null) {
+        wantShim = await prompt.askYesNo(msg().promptInstallShim(CLAUDE_TARGET.command), {
           defaultYes: true,
         })
       }
-      if (wantCursorAlias === null && cursorAgentPresent) {
-        wantCursorAlias = await prompt.askYesNo(
-          msg().promptAddCursorAlias(CURSOR_AGENT_TARGET.defaultName, shell),
+      if (wantCursorShim === null && cursorAgentPresent) {
+        wantCursorShim = await prompt.askYesNo(
+          msg().promptInstallCursorShim(CURSOR_AGENT_TARGET.command),
           { defaultYes: true },
         )
       }
-      if (!opts.shell) {
-        const shellAnswer = await prompt.ask(msg().promptShell(listSupportedShells().join('/')), {
-          defaultValue: shell,
-        })
-        const normalized = normalizeShellName(shellAnswer)
-        if (!normalized) {
-          throw new Error(msg().unsupportedShell(shellAnswer))
+      // Asked only when there is something to lose: on a fresh install the
+      // answer is empty, and a question whose answer is always empty is noise.
+      // Pressing Enter here keeps exactly what is in place already.
+      if (wantShim && claudeArgs === null) {
+        const current = shimArgsFor(CLAUDE_TARGET, null, carriedFlags).extraArgs
+        if (current) {
+          claudeArgs = await prompt.ask(msg().promptShimArgs(CLAUDE_TARGET.command), {
+            defaultValue: current,
+          })
         }
-        shell = normalized
+      }
+      if (wantCursorShim && cursorArgs === null) {
+        const current = shimArgsFor(CURSOR_AGENT_TARGET, null, carriedFlags).extraArgs
+        if (current) {
+          cursorArgs = await prompt.ask(msg().promptShimArgs(CURSOR_AGENT_TARGET.command), {
+            defaultValue: current,
+          })
+        }
       }
 
-      if (wantAlias) {
-        const resolved = await resolveAliasNameInteractive(prompt, shell, aliasName)
-        if (resolved === null) {
-          wantAlias = false
-          aliasSkipReason = msg().aliasSkipUserChose()
-        } else {
-          aliasName = resolved
-        }
+      // Nothing to put on PATH — asking whose rc to edit would be a question
+      // with no consequence.
+      if (shells === null && (wantShim || wantCursorShim)) {
+        const answer = await prompt.ask(msg().promptShells(listSupportedShells().join('/')), {
+          defaultValue: detectedShell,
+        })
+        shells = resolveShells(answer, detectedShell)
       }
     })
   } else {
     if (wantHook === null) wantHook = true
     if (wantCursor === null) wantCursor = cursorDirExists()
-    if (wantAlias === null) wantAlias = true
-    if (wantCursorAlias === null) wantCursorAlias = cursorAgentPresent
-
-    if (wantAlias) {
-      const resolved = pickFreeAliasName(shell, aliasName)
-      if (resolved === null) {
-        wantAlias = false
-        aliasSkipReason = msg().aliasSkipAllTaken(aliasName)
-      } else {
-        aliasName = resolved
-      }
-    }
+    if (wantShim === null) wantShim = true
+    if (wantCursorShim === null) wantCursorShim = cursorAgentPresent
   }
+
+  if (claudeArgs !== null) validatedShimArgs(claudeArgs)
+  if (cursorArgs !== null) validatedShimArgs(cursorArgs)
+
+  const targetShells = shells ?? [detectedShell]
 
   // Everything that can refuse the install is checked before the first write.
   // setup has no rollback, so failing halfway leaves a machine with a config but
@@ -318,7 +464,9 @@ export async function runSetup(argv: string[] = []): Promise<void> {
   // can see up front.
   if (wantHook) assertClaudeHooksInstallable()
   if (wantCursor) assertCursorHooksInstallable()
-  if (wantAlias || wantCursorAlias) assertAliasWritable(shell)
+  if (wantShim || wantCursorShim) {
+    for (const shell of targetShells) assertRcWritable(pathRcPathForShell(shell))
+  }
 
   // Validate every list before writing anything: a typo in --cursor-countries
   // must not leave the shared list already rewritten.
@@ -366,73 +514,86 @@ export async function runSetup(argv: string[] = []): Promise<void> {
     console.log(msg().cursorHookSkipped())
   }
 
-  // Printed once, after every rc change: two aliases in one run must not ask
-  // the user to reload their shell twice.
-  let rcHintFile: string | null = null
+  // The alias gate is gone, so an alias block of ours left in an rc is a dead
+  // second layer. The user's own flags were read out of it above, before this
+  // removes it — losing a --dangerously-skip-permissions in an upgrade would be
+  // our doing. Blocks holding anything we did not write are never touched.
+  for (const removal of uninstallAliasesEverywhere()) {
+    if (removal.changed) console.log(msg().aliasBlockReplaced(removal.file))
+    else if (removal.modified) console.log(msg().aliasBlockManuallyEdited(removal.file))
+  }
 
-  if (wantAlias) {
-    // The name was already checked for a collision above → skipConflictCheck,
-    // to avoid throwing again. overwriteCustom only on an explicit --force-alias.
-    const alias = installAlias(shell, {
-      name: aliasName,
-      skipConflictCheck: true,
-      overwriteCustom: opts.forceAlias,
-    })
-    if (alias.preserved) {
-      reportPreservedAlias(alias, aliasName)
-    } else {
-      console.log(msg().aliasInstalled(alias.file))
-      console.log(`   ${alias.snippet.split('\n')[1] || alias.snippet}`)
-      // Only when the name actually changed under us — saying "'claude' was
-      // taken" on an empty rc, or when the user asked for something else
-      // entirely, is simply untrue.
-      if (alias.name !== requestedAliasName) {
-        console.log(msg().aliasNameTaken(requestedAliasName, alias.name))
-      }
-      if (alias.name !== DEFAULT_ALIAS_NAME) {
-        console.log(msg().aliasRunVia(alias.name))
-      }
-      rcHintFile = alias.file
-    }
-  } else if (aliasSkipReason) {
-    console.log(msg().aliasSkippedReason(aliasSkipReason))
+  const geoGuardBin = resolveGeoGuardBin()
+  const installFor = (target: ShimTarget, option: string | null): void => {
+    const args = shimArgsFor(target, option, carriedFlags)
+    reportShim(
+      installShim(target, {
+        extraArgs: args.extraArgs,
+        // Asking for particular flags is saying what the file should be, so it
+        // outranks the rule that keeps flags already there.
+        overwriteCustom: opts.forceShim || args.fromOption,
+        geoGuardBin,
+      }),
+      args.fromOption,
+    )
+  }
+
+  if (wantShim) {
+    installFor(CLAUDE_TARGET, claudeArgs)
   } else {
-    console.log(msg().aliasSkipped())
+    console.log(msg().shimSkipped())
   }
 
-  if (wantCursorAlias) {
-    const name = CURSOR_AGENT_TARGET.defaultName
-    const conflict = aliasConflictFor(shell, name)
-    if (conflict) {
-      // No fallback name here, unlike `claude`: an alias under another name
-      // would not stand in front of the `cursor-agent` the user actually types,
-      // so it would look installed and guard nothing.
-      console.log(msg().cursorAliasSkippedConflict(name, conflict.existing))
-    } else {
-      const alias = installAlias(shell, {
-        name,
-        target: CURSOR_AGENT_TARGET,
-        skipConflictCheck: true,
-        overwriteCustom: opts.forceAlias,
-      })
-      if (alias.preserved) {
-        reportPreservedAlias(alias, name)
+  if (wantCursorShim) {
+    installFor(CURSOR_AGENT_TARGET, cursorArgs)
+  } else if (opts.cursorShim !== false && !cursorAgentPresent) {
+    console.log(msg().shimSkippedMissing(CURSOR_AGENT_TARGET.command))
+  }
+
+  const changedRcFiles: string[] = []
+  if (wantShim || wantCursorShim) {
+    // GEO_GUARD_RC points every shell at one file, so the same rc can come up
+    // twice; writing it once and reporting it once is the honest account.
+    const seen = new Set<string>()
+    for (const shell of targetShells) {
+      const entry = installPathEntry(shell)
+      if (seen.has(entry.file)) continue
+      seen.add(entry.file)
+
+      if (entry.preserved === 'foreign') {
+        console.log(msg().pathEntryKeptForeign(entry.file))
+      } else if (entry.alreadyPresent) {
+        console.log(msg().pathEntryAlreadyPresent(entry.file))
       } else {
-        console.log(msg().cursorAliasInstalled(alias.file))
-        console.log(`   ${alias.snippet.split('\n')[1] || alias.snippet}`)
-        rcHintFile = alias.file
+        console.log(msg().pathEntryInstalled(entry.file))
+        changedRcFiles.push(entry.file)
+      }
+
+      // A login bash reads its login file and never ~/.bashrc, where the entry
+      // above just went — and an interactive one reads ~/.bashrc and never the
+      // login file. Neither covers the other, so both get an entry of their own.
+      if (shell === 'bash' && process.platform !== 'win32') {
+        const login = installBashLoginPathEntry()
+        if (login?.changed && !seen.has(login.file)) {
+          seen.add(login.file)
+          console.log(msg().pathEntryLoginFile(login.file))
+          changedRcFiles.push(login.file)
+        }
       }
     }
-  } else if (opts.cursorAlias !== false && !cursorAgentPresent) {
-    console.log(msg().cursorAliasSkippedMissing(CURSOR_AGENT_TARGET.command))
+
+    // The PowerShell profile above only ever reaches PowerShell sessions.
+    // cmd.exe, a shortcut, Explorer and every IDE take PATH from the user
+    // environment — so without this the gate on Windows is one door in a wall
+    // full of them.
+    if (process.platform === 'win32') installUserPath()
   }
 
-  if (rcHintFile) {
+  if (wantShim || wantCursorShim) {
     console.log('')
-    console.log(reloadHint(rcHintFile))
-    if (shell === 'bash' && process.platform === 'darwin') {
-      console.log(msg().macosBashProfileHint())
-    }
+    const currentRc = pathRcPathForShell(detectedShell)
+    if (changedRcFiles.includes(currentRc)) console.log(reloadHint(currentRc))
+    console.log(msg().reloadForPath(shimDir()))
   }
 
   console.log('')

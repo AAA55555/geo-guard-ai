@@ -14,6 +14,7 @@ import {
 import { detectCountry, isAllowed } from './geo'
 import { profileFromEvent, readHookPayload } from './hook-payload'
 import { resolveRealBin } from './resolve-bin'
+import { DEPTH_ENV, depthExceeded, envWithNextDepth } from './shim-paths'
 import { msg } from './i18n'
 
 /**
@@ -168,6 +169,14 @@ export async function runWrap(
     process.exit(1)
   }
 
+  // Backstop for the PATH gate. resolveRealBin already refuses to launch one of
+  // our shims, so reaching this depth means a shim got past both of its checks —
+  // and the next spawn would be another geo-guard, forever. Stop instead.
+  if (depthExceeded()) {
+    console.error(msg().wrapRecursionGuard(DEPTH_ENV))
+    process.exit(1)
+  }
+
   const config = loadConfig(profileForCommand(command))
   let realBin: string
   try {
@@ -213,6 +222,9 @@ export async function runWrap(
       stdio: 'inherit',
       windowsHide: true,
       shell: viaShell,
+      // One level deeper, so a chain that somehow leads back to geo-guard is
+      // counted rather than repeated.
+      env: envWithNextDepth(),
     },
   )
 

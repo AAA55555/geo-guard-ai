@@ -21,8 +21,10 @@ export type Messages = {
 
   // --- setup: arg parsing / validation ---
   unknownSetupArg: (arg: string) => string
+  retiredAliasFlag: (arg: string, replacement: string) => string
+  retiredAliasNameFlag: (arg: string) => string
+  invalidShimArgs: (value: string) => string
   promptInputEnded: () => string
-  invalidAliasName: (name: string) => string
   unsupportedShellWithList: (shell: string, list: string) => string
   unsupportedShell: (shell: string) => string
   emptyCountryList: () => string
@@ -54,16 +56,12 @@ export type Messages = {
   promptCountries: () => string
   promptInstallHook: () => string
   promptInstallCursorHook: () => string
-  promptAddAlias: (name: string, shell: string, command: string) => string
-  promptAddCursorAlias: (name: string, shell: string) => string
-  promptShell: (list: string) => string
-  promptAliasName: () => string
+  promptInstallShim: (command: string) => string
+  promptInstallCursorShim: (command: string) => string
+  promptShimArgs: (command: string) => string
+  promptShells: (list: string) => string
   promptCursorSeparateCountries: () => string
   promptCursorCountries: () => string
-
-  // --- setup: alias conflict (interactive) ---
-  aliasConflictHeader: (file: string, name: string) => string
-  aliasWontTouch: () => string
 
   // --- setup: output ---
   configWritten: (file: string) => string
@@ -73,27 +71,31 @@ export type Messages = {
   hookSkipped: () => string
   cursorHookInstalled: (file: string) => string
   cursorHookSkipped: () => string
-  aliasInstalled: (file: string) => string
-  aliasKeptCustom: (file: string) => string
-  aliasKeptForeign: (file: string) => string
-  aliasForceHint: () => string
-  aliasFixByHand: () => string
-  aliasNameChangeSkipped: (kept: string, requested: string) => string
   hookCustomKept: () => string
-  aliasNameTaken: (requested: string, used: string) => string
-  aliasRunVia: (name: string) => string
+  aliasBlockReplaced: (file: string) => string
   reloadRc: (file: string) => string
   reloadRcPowershell: (file: string) => string
-  macosBashProfileHint: () => string
-  aliasSkippedReason: (reason: string) => string
-  aliasSkipped: () => string
-  cursorAliasSkippedConflict: (name: string, existing: string) => string
-  cursorAliasSkippedMissing: (command: string) => string
-  cursorAliasInstalled: (file: string) => string
-  aliasSkipUserChose: () => string
-  aliasSkipAllTaken: (name: string) => string
   setupDone: () => string
   configPathLine: (path: string) => string
+
+  // --- setup: PATH shims ---
+  shimInstalled: (file: string) => string
+  shimUpToDate: (file: string) => string
+  shimKeptCustom: (file: string) => string
+  shimKeptForeign: (file: string) => string
+  shimForceHint: () => string
+  shimFlagsKept: (flags: string) => string
+  shimFlagsSet: (flags: string) => string
+  shimSkipped: () => string
+  shimSkippedMissing: (command: string) => string
+  pathEntryInstalled: (file: string) => string
+  pathEntryAlreadyPresent: (file: string) => string
+  pathEntryKeptForeign: (file: string) => string
+  pathEntryLoginFile: (file: string) => string
+  userPathInstalled: (dir: string) => string
+  userPathAlreadyPresent: (dir: string) => string
+  userPathUnavailable: (dir: string, reason: string) => string
+  reloadForPath: (dir: string) => string
 
   // --- status command ---
   unknownStatusArg: (arg: string) => string
@@ -105,16 +107,30 @@ export type Messages = {
   statusHookMissing: () => string
   statusHookFileMissing: () => string
   statusHookNotNeeded: () => string
-  statusAliasHeader: (file: string) => string
-  statusCursorAliasHeader: (file: string) => string
-  statusAliasNotNeeded: (command: string) => string
-  statusAliasFileMissing: () => string
-  statusAliasMissing: () => string
-  statusAliasPristine: (name: string, command: string) => string
-  statusAliasCustom: (body: string) => string
-  statusAliasForeign: (body: string) => string
-  statusAliasBroken: (body: string) => string
-  statusAliasBrokenRepairable: (body: string) => string
+  statusAliasLeftoverHeader: () => string
+  statusAliasLeftover: (file: string) => string
+  statusAliasLeftoverBroken: (file: string) => string
+  statusShimHeader: (dir: string) => string
+  statusShimPristine: (command: string) => string
+  statusShimCustom: (command: string, flags: string) => string
+  statusShimForeign: (file: string) => string
+  statusShimMissing: (command: string) => string
+  statusShimNotNeeded: (command: string) => string
+  statusShimNotFirst: (found: string) => string
+  statusShimNotOnPath: (dir: string) => string
+  statusShimNoRealBin: (command: string, message: string) => string
+  statusPathHeader: (file: string) => string
+  statusPathPresent: (dir: string) => string
+  statusPathMissing: (dir: string) => string
+  statusPathForeign: () => string
+  statusPathFileMissing: () => string
+  statusPathAlsoIn: (files: string) => string
+  statusUserPathHeader: () => string
+  statusUserPathPresent: (dir: string) => string
+  statusUserPathMissing: (dir: string) => string
+  statusUserPathUnknown: (reason: string) => string
+  statusProcessPathPresent: (dir: string) => string
+  statusProcessPathMissing: (dir: string) => string
   statusCountryHeader: () => string
   statusCountryAllowed: (country: string, allowed: string) => string
   statusCountryNotAllowed: (country: string, allowed: string) => string
@@ -135,6 +151,7 @@ export type Messages = {
   wrapCountryNotAllowedBlocked: (country: string, allowed: string, profile?: string) => string
   wrapGeoCheckOk: (country: string) => string
   wrapSpawnFailed: (bin: string, message: string) => string
+  wrapRecursionGuard: (envVar: string) => string
 
   // --- uninstall ---
   unknownUninstallArg: (arg: string) => string
@@ -142,6 +159,15 @@ export type Messages = {
   hookNotFound: () => string
   cursorHookNotFound: () => string
   aliasRemoved: (file: string) => string
+  shimRemoved: (file: string) => string
+  shimsNotFound: () => string
+  shimKeptOnUninstall: (file: string) => string
+  pathEntryRemoved: (file: string) => string
+  pathEntriesNotFound: () => string
+  userPathRemoved: (dir: string) => string
+  userPathNotFound: () => string
+  userPathRemoveFailed: (dir: string, reason: string) => string
+  pathEntryManuallyEdited: (file: string) => string
   aliasBlocksNotFound: () => string
   aliasBlockManuallyEdited: (file: string) => string
   configKept: (path: string) => string
@@ -158,7 +184,6 @@ export type Messages = {
   notAnObject: () => string
   rcNotWritable: (file: string) => string
   notACommand: (word: string, list: string) => string
-  aliasAlreadyExists: (name: string, existing: string) => string
   realBinNotFound: (path: string) => string
   binNotFound: (command: string) => string
   targetIsSelf: (command: string) => string
@@ -170,7 +195,7 @@ const en: Messages = {
 
 Usage:
   geo-guard setup [options]     interactive setup
-  geo-guard uninstall [--keep-config]  remove our traces (hook, alias, config)
+  geo-guard uninstall [--keep-config]  remove our traces (hook, launch gate, config)
   geo-guard config [options]    show / change the allowed countries
   geo-guard check               hook check (exit 0/2)
   geo-guard status              what is installed and working (exit 0/1)
@@ -181,15 +206,17 @@ Usage:
 setup options:
   -y, --yes                 no questions (defaults)
   -c, --countries ES,PT     allowed countries
-  --shell zsh|bash|fish|powershell
+  --shells zsh,bash|all     whose rc files get the PATH entry (default: your shell)
+  --shell zsh               one shell, same as --shells zsh
   --hook / --no-hook
   --cursor / --no-cursor    install the Cursor hook (~/.cursor/hooks.json)
-  --alias / --no-alias
-  --cursor-alias / --no-cursor-alias
-                            alias cursor-agent → geo-guard cursor-agent
+  --shim / --no-shim        gate 'claude' at launch (PATH shim)
+  --cursor-shim / --no-cursor-shim
+                            gate 'cursor-agent' at launch
                             (default: on when cursor-agent is on PATH)
-  --alias-name cc           alias name (default claude; on collision suggests another)
-  --force-alias             overwrite an alias block you edited by hand
+  --force-shim              regenerate a shim of ours whose body you edited
+  --claude-args "--flag"    flags the gate passes to claude on every launch
+  --cursor-args "--flag"    same for cursor-agent (empty value clears them)
   --claude-countries ES,PT  countries for Claude Code only
   --cursor-countries PL     countries for Cursor only
 
@@ -214,10 +241,14 @@ Examples:
 `,
 
   unknownSetupArg: arg => `Unknown setup argument: ${arg}`,
+  retiredAliasFlag: (arg, replacement) =>
+    `${arg} is gone: the launch gate is a PATH shim now, not a shell alias (an alias never applied to scripts, to \\claude, or to a shell whose rc we had not written). Use ${replacement} instead.`,
+  retiredAliasNameFlag: arg =>
+    `${arg} is gone: the launch gate is a file named after the command in ~/.geo-guard/bin, so it has no name of its own. Drop the flag, or skip the gate with --no-shim.`,
+  invalidShimArgs: value =>
+    `Flags for the launch gate cannot contain control characters or line breaks: '${value}'`,
   promptInputEnded: () =>
     'Input ended before every question was answered — nothing was installed. For an unattended run use: geo-guard setup --yes',
-  invalidAliasName: name =>
-    `Invalid alias name: '${name}'. Allowed: letters, digits, _ - . and no spaces`,
   unsupportedShellWithList: (shell, list) => `Unsupported shell: ${shell}. Available: ${list}`,
   unsupportedShell: shell => `Unsupported shell: ${shell}`,
   emptyCountryList: () => 'Country list is empty',
@@ -250,17 +281,13 @@ Examples:
   promptCountries: () => 'Allowed countries (ISO, comma-separated)',
   promptInstallHook: () => 'Install the Claude Code hook (UserPromptSubmit)?',
   promptInstallCursorHook: () => 'Install the Cursor hook (beforeSubmitPrompt, ~/.cursor/hooks.json)?',
-  promptAddAlias: (name, shell, command) =>
-    `Add alias ${name} → geo-guard ${command} to ${shell}?`,
-  promptAddCursorAlias: (name, shell) =>
-    `Add alias ${name} → geo-guard cursor-agent to ${shell}? (blocks the terminal client at launch)`,
-  promptShell: list => `Shell for the alias (${list})`,
-  promptAliasName: () => 'Name for the geo-guard alias (empty — skip alias)',
+  promptInstallShim: command => `Gate ${command} at launch (a shim on your PATH)?`,
+  promptInstallCursorShim: command =>
+    `Gate ${command} at launch too? (blocks the terminal client before it starts)`,
+  promptShimArgs: command => `Flags to pass to ${command} on every launch (empty — none)`,
+  promptShells: list => `Shells whose rc gets the PATH entry (${list}, or all)`,
   promptCursorSeparateCountries: () => 'Use a different country list for Cursor?',
   promptCursorCountries: () => 'Allowed countries for Cursor (ISO, comma-separated)',
-
-  aliasConflictHeader: (file, name) => `⚠️  ${file} already has its own alias '${name}':`,
-  aliasWontTouch: () => '   geo-guard will not touch it.',
 
   configWritten: file => `✅ config → ${file}`,
   allowedLine: list => `   allowed: ${list}`,
@@ -269,33 +296,36 @@ Examples:
   hookSkipped: () => '⏭  Claude hook skipped',
   cursorHookInstalled: file => `✅ Cursor hook → ${file}`,
   cursorHookSkipped: () => '⏭  Cursor hook skipped',
-  aliasInstalled: file => `✅ alias → ${file}`,
-  aliasKeptCustom: file => `⏭  alias in ${file} has your own flags — left untouched:`,
-  aliasKeptForeign: file => `⚠️  the geo-guard block in ${file} holds foreign content — left untouched:`,
-  aliasForceHint: () => '   Overwrite with the default alias: geo-guard setup --force-alias',
-  aliasFixByHand: () =>
-    '   Not ours to remove — take what you need out of the block by hand, then run setup again.',
-  aliasNameChangeSkipped: (kept, requested) =>
-    `   Kept the existing name '${kept}', did not switch to '${requested}' — use --force-alias to rename.`,
   hookCustomKept: () => '   your own hook settings (timeout etc.) were kept',
-  aliasNameTaken: (requested, used) =>
-    `   '${requested}' is taken by an alias of your own — using '${used}' instead.`,
-  aliasRunVia: name => `   Run Claude Code via: ${name} …`,
+  aliasBlockReplaced: file =>
+    `✅ the old geo-guard alias block is gone from ${file} — the PATH shim replaces it`,
   reloadRc: file => `Reload your rc: source ${file}`,
   reloadRcPowershell: file => `Reload your profile: . ${file}`,
-  macosBashProfileHint: () =>
-    '   macOS: a login bash shell reads ~/.bash_profile. If the alias is not picked up — add `source ~/.bashrc` to ~/.bash_profile.',
-  aliasSkippedReason: reason => `⏭  alias skipped: ${reason}`,
-  aliasSkipped: () => '⏭  alias skipped',
-  cursorAliasSkippedConflict: (name, existing) =>
-    `⏭  cursor-agent alias skipped: '${name}' is already taken by ${existing}`,
-  cursorAliasSkippedMissing: command => `⏭  cursor-agent alias skipped: no ${command} on PATH`,
-  cursorAliasInstalled: file => `✅ cursor-agent alias → ${file}`,
-  aliasSkipUserChose: () => 'you chose not to create the alias (name taken)',
-  aliasSkipAllTaken: name =>
-    `name '${name}' and fallbacks (cc/ccg/…) are taken — set your own: --alias-name <name>`,
-  setupDone: () => 'Done. Verify: geo-guard check && geo-guard claude --version',
+  setupDone: () => 'Done. Verify: geo-guard status (in a new terminal, once the PATH entry is live).',
   configPathLine: path => `Config: ${path}`,
+
+  shimInstalled: file => `✅ launch gate → ${file}`,
+  shimUpToDate: file => `✅ launch gate already in place: ${file}`,
+  shimKeptCustom: file => `⏭  ${file} was edited beyond the flags we can read — left untouched`,
+  shimKeptForeign: file => `⚠️  ${file} already exists and is not ours — left untouched`,
+  shimForceHint: () =>
+    '   Regenerate it: geo-guard setup --force-shim (to change the flags instead, use --claude-args / --cursor-args)',
+  shimFlagsKept: flags => `   your flags were kept: ${flags}`,
+  shimFlagsSet: flags => `   flags passed on every launch: ${flags}`,
+  shimSkipped: () => '⏭  launch gate skipped',
+  shimSkippedMissing: command => `⏭  launch gate skipped: no ${command} on PATH`,
+  pathEntryInstalled: file => `✅ PATH entry → ${file}`,
+  pathEntryAlreadyPresent: file => `⏭  PATH entry already in ${file}`,
+  pathEntryKeptForeign: file =>
+    `⚠️  the geo-guard PATH block in ${file} holds foreign content — left untouched`,
+  pathEntryLoginFile: file =>
+    `✅ PATH entry → ${file} (a login bash reads that file, never ~/.bashrc)`,
+  userPathInstalled: dir => `✅ ${dir} added to your user PATH (all new processes, not only PowerShell)`,
+  userPathAlreadyPresent: dir => `⏭  ${dir} is already in your user PATH`,
+  userPathUnavailable: (dir, reason) =>
+    `⚠️  could not update your user PATH (${reason}) — the gate covers PowerShell only; add ${dir} to it by hand to cover cmd.exe and everything else`,
+  reloadForPath: dir =>
+    `Open a new terminal for the launch gate to take effect — it works once ${dir} is on your PATH.`,
 
   unknownStatusArg: arg => `Unknown status argument: ${arg}`,
   statusConfigPresent: () => '  ✅ config file found',
@@ -306,18 +336,38 @@ Examples:
   statusHookMissing: () => '  ✖ our hook entry is missing',
   statusHookFileMissing: () => '  ✖ no such file — the hook is not installed',
   statusHookNotNeeded: () => '  ⏭  the tool is not installed here — no hook needed',
-  statusAliasHeader: file => `Shell alias: ${file}`,
-  statusCursorAliasHeader: file => `cursor-agent alias: ${file}`,
-  statusAliasNotNeeded: command => `  ⏭  ${command} is not installed here — no alias needed`,
-  statusAliasFileMissing: () => '  ✖ no such rc file — the alias is not installed',
-  statusAliasMissing: () => '  ✖ no geo-guard alias block in this file',
-  statusAliasPristine: (name, command) => `  ✅ alias '${name}' → geo-guard ${command}`,
-  statusAliasCustom: body => `  ✅ alias with flags of your own: ${body}`,
-  statusAliasForeign: body => `  ✖ the geo-guard block holds foreign content: ${body}`,
-  statusAliasBroken: body =>
-    `  ✖ the geo-guard block has no END marker and is not ours to repair — fix the file by hand: ${body}`,
-  statusAliasBrokenRepairable: body =>
-    `  ✖ the geo-guard block has no END marker — 'geo-guard setup' will repair it: ${body}`,
+  statusAliasLeftoverHeader: () => 'Shell aliases from an earlier version:',
+  statusAliasLeftover: file =>
+    `  ✖ an old geo-guard alias block is still in ${file} — 'geo-guard setup' takes it out`,
+  statusAliasLeftoverBroken: file =>
+    `  ✖ an old geo-guard alias block in ${file} has no END marker, so it is not ours to cut — remove it by hand`,
+  statusShimHeader: dir => `Launch gate (PATH shims): ${dir}`,
+  statusShimPristine: command => `  ✅ ${command} goes through geo-guard`,
+  statusShimCustom: (command, flags) =>
+    `  ✅ ${command} goes through geo-guard, with flags of your own: ${flags}`,
+  statusShimForeign: file => `  ✖ ${file} is not ours — the launch gate is not installed`,
+  statusShimMissing: command => `  ✖ no shim for ${command}`,
+  statusShimNotNeeded: command => `  ⏭  ${command} is not installed here — no shim needed`,
+  statusShimNotFirst: found =>
+    `  ✖ PATH finds another binary first: ${found}. Open a new terminal, or check the PATH block in your rc.`,
+  statusShimNotOnPath: dir =>
+    `  ✖ ${dir} is not on this shell's PATH — the gate is installed but not in effect. Open a new terminal.`,
+  statusShimNoRealBin: (command, message) =>
+    `  ✖ the real ${command} behind the shim cannot be found: ${message}`,
+  statusPathHeader: file => `PATH entry: ${file}`,
+  statusPathPresent: dir => `  ✅ ${dir} is added to PATH`,
+  statusPathMissing: dir => `  ✖ ${dir} is not added to PATH in this file`,
+  statusPathForeign: () => '  ✖ the geo-guard PATH block holds foreign content',
+  statusPathFileMissing: () => '  ✖ no such rc file — the PATH entry is not installed',
+  statusPathAlsoIn: files => `  ✅ also in: ${files}`,
+  statusUserPathHeader: () => 'User PATH (Windows):',
+  statusUserPathPresent: dir => `  ✅ ${dir} is in your user PATH`,
+  statusUserPathMissing: dir =>
+    `  ✖ ${dir} is not in your user PATH — outside PowerShell the gate is not in effect`,
+  statusUserPathUnknown: reason => `  ⚠️  could not read your user PATH: ${reason}`,
+  statusProcessPathPresent: dir => `  ✅ ${dir} is on the PATH of this process`,
+  statusProcessPathMissing: dir =>
+    `  ✖ ${dir} is not on the PATH of this process — open a new terminal`,
   statusCountryHeader: () => 'Country:',
   statusCountryAllowed: (country, allowed) => `  ✅ ${country} — allowed (allowed: ${allowed})`,
   statusCountryNotAllowed: (country, allowed) =>
@@ -346,19 +396,32 @@ Examples:
   },
   wrapGeoCheckOk: country => `✅ Geo-check: ${country}`,
   wrapSpawnFailed: (bin, message) => `🚫 geo-guard: failed to launch ${bin}: ${message}`,
+  wrapRecursionGuard: envVar =>
+    `🚫 geo-guard: the launch gate called itself (${envVar} reached its limit). The real binary is hidden behind geo-guard's own shim — point at it explicitly: GEO_GUARD_REAL_BIN=/path/to/binary`,
 
   unknownUninstallArg: arg => `Unknown uninstall argument: ${arg}`,
   hookRemoved: file => `✅ hook removed from ${file}`,
   hookNotFound: () => '⏭  our hook was not found in settings.json',
   cursorHookNotFound: () => '⏭  our hook was not found in ~/.cursor/hooks.json',
   aliasRemoved: file => `✅ alias removed from ${file}`,
+  shimRemoved: file => `✅ launch gate removed: ${file}`,
+  shimsNotFound: () => '⏭  no geo-guard shims found',
+  shimKeptOnUninstall: file => `⚠️  ${file} is not ours — left as is, remove it yourself if you want`,
+  pathEntryRemoved: file => `✅ PATH entry removed from ${file}`,
+  pathEntriesNotFound: () => '⏭  no geo-guard PATH blocks found in rc files',
+  userPathRemoved: dir => `✅ ${dir} removed from your user PATH`,
+  userPathNotFound: () => '⏭  nothing of ours in your user PATH',
+  userPathRemoveFailed: (dir, reason) =>
+    `⚠️  could not update your user PATH (${reason}) — remove ${dir} from it by hand`,
+  pathEntryManuallyEdited: file =>
+    `⚠️  the geo-guard PATH block in ${file} was edited by hand — left as is, remove it yourself if you want`,
   aliasBlocksNotFound: () => '⏭  no geo-guard alias blocks found in rc files',
   aliasBlockManuallyEdited: file =>
     `⚠️  the geo-guard alias block in ${file} was edited by hand — left as is, remove it yourself if you want`,
   configKept: path => `⏭  config kept (--keep-config): ${path}`,
   removed: item => `✅ removed: ${item}`,
   configNotFound: () => '⏭  config not found',
-  uninstallDone: () => "Done. Other aliases (cc/c) and settings.json.bak were left untouched.",
+  uninstallDone: () => "Done. Your own aliases, PATH lines and settings.json.bak were left untouched.",
   preuninstallError: message => `geo-guard-ai preuninstall: ${message}`,
 
   invalidConfig: (file, message) => `Invalid config ${file}: ${message}`,
@@ -368,10 +431,9 @@ Examples:
   notAnObject: () => 'the file does not hold a JSON object',
   invalidHookRoot: file =>
     `${file}: the file does not hold a JSON object. Fix or remove it by hand — geo-guard will not rewrite someone else's data.`,
-  rcNotWritable: file => `Cannot write ${file}. Fix its permissions, or run setup with --no-alias.`,
+  rcNotWritable: file => `Cannot write ${file}. Fix its permissions, or run setup with --no-shim.`,
   notACommand: (word, list) =>
     `geo-guard has no '${word}' command (commands: ${list}). To run a program called '${word}' through the geo-check, be explicit: geo-guard -- ${word}`,
-  aliasAlreadyExists: (name, existing) => `Alias '${name}' already exists: ${existing}`,
   realBinNotFound: path => `GEO_GUARD_REAL_BIN not found: ${path}`,
   binNotFound: command => `Binary not found: ${command}`,
   targetIsSelf: command => `Target points at geo-guard itself: ${command}`,
@@ -384,7 +446,7 @@ const ru: Messages = {
 
 Использование:
   geo-guard setup [options]     интерактивная настройка
-  geo-guard uninstall [--keep-config]  убрать наши следы (hook, alias, конфиг)
+  geo-guard uninstall [--keep-config]  убрать наши следы (hook, гейт на запуск, конфиг)
   geo-guard config [options]    показать / изменить разрешённые страны
   geo-guard check               hook-проверка (exit 0/2)
   geo-guard status              что установлено и работает (exit 0/1)
@@ -395,15 +457,17 @@ const ru: Messages = {
 setup options:
   -y, --yes                 без вопросов (дефолты)
   -c, --countries ES,PT     разрешённые страны
-  --shell zsh|bash|fish|powershell
+  --shells zsh,bash|all     в чьи rc прописать PATH (по умолчанию — твой shell)
+  --shell zsh               один shell, то же, что --shells zsh
   --hook / --no-hook
   --cursor / --no-cursor    установить hook Cursor (~/.cursor/hooks.json)
-  --alias / --no-alias
-  --cursor-alias / --no-cursor-alias
-                            alias cursor-agent → geo-guard cursor-agent
+  --shim / --no-shim        гейт на запуск 'claude' (shim в PATH)
+  --cursor-shim / --no-cursor-shim
+                            гейт на запуск 'cursor-agent'
                             (по умолчанию: включён, если cursor-agent есть в PATH)
-  --alias-name cc           имя alias (дефолт claude; при коллизии предложит другое)
-  --force-alias             перезаписать alias-блок, который правил вручную
+  --force-shim              пересобрать наш shim, тело которого правили руками
+  --claude-args "--flag"    флаги, с которыми гейт запускает claude
+  --cursor-args "--flag"    то же для cursor-agent (пустое значение — снять)
   --claude-countries ES,PT  страны только для Claude Code
   --cursor-countries PL     страны только для Cursor
 
@@ -428,10 +492,14 @@ uninstall options:
 `,
 
   unknownSetupArg: arg => `Неизвестный аргумент setup: ${arg}`,
+  retiredAliasFlag: (arg, replacement) =>
+    `${arg} больше нет: гейт на запуск теперь shim в PATH, а не alias в shell (alias не действовал ни в скриптах, ни на \\claude, ни в шелле, чей rc мы не правили). Вместо него: ${replacement}.`,
+  retiredAliasNameFlag: arg =>
+    `${arg} больше нет: гейт на запуск — файл с именем самой команды в ~/.geo-guard/bin, своего имени у него нет. Убери флаг или откажись от гейта через --no-shim.`,
+  invalidShimArgs: value =>
+    `Во флагах для гейта на запуск не может быть управляющих символов и переносов строк: '${value}'`,
   promptInputEnded: () =>
     'Ввод кончился раньше, чем закончились вопросы — ничего не установлено. Для запуска без участия человека: geo-guard setup --yes',
-  invalidAliasName: name =>
-    `Недопустимое имя alias: '${name}'. Разрешены буквы, цифры, _ - . без пробелов`,
   unsupportedShellWithList: (shell, list) => `Неподдерживаемый shell: ${shell}. Доступны: ${list}`,
   unsupportedShell: shell => `Неподдерживаемый shell: ${shell}`,
   emptyCountryList: () => 'Список стран пуст',
@@ -464,17 +532,13 @@ uninstall options:
   promptCountries: () => 'Разрешённые страны (ISO, через запятую)',
   promptInstallHook: () => 'Установить hook Claude Code (UserPromptSubmit)?',
   promptInstallCursorHook: () => 'Установить hook Cursor (beforeSubmitPrompt, ~/.cursor/hooks.json)?',
-  promptAddAlias: (name, shell, command) =>
-    `Добавить alias ${name} → geo-guard ${command} в ${shell}?`,
-  promptAddCursorAlias: (name, shell) =>
-    `Добавить alias ${name} → geo-guard cursor-agent в ${shell}? (блокирует терминальный клиент на запуске)`,
-  promptShell: list => `Shell для alias (${list})`,
-  promptAliasName: () => 'Имя для geo-guard alias (пусто — пропустить alias)',
+  promptInstallShim: command => `Поставить гейт на запуск ${command} (shim в PATH)?`,
+  promptInstallCursorShim: command =>
+    `Поставить гейт и на ${command}? (блокирует терминальный клиент до старта)`,
+  promptShimArgs: command => `Флаги, с которыми запускать ${command} (пусто — без флагов)`,
+  promptShells: list => `В чьи rc прописать PATH (${list} или all)`,
   promptCursorSeparateCountries: () => 'Для Cursor нужен отдельный список стран?',
   promptCursorCountries: () => 'Разрешённые страны для Cursor (ISO, через запятую)',
-
-  aliasConflictHeader: (file, name) => `⚠️  В ${file} уже есть свой alias '${name}':`,
-  aliasWontTouch: () => '   geo-guard его не тронет.',
 
   configWritten: file => `✅ конфиг → ${file}`,
   allowedLine: list => `   allowed: ${list}`,
@@ -483,33 +547,37 @@ uninstall options:
   hookSkipped: () => '⏭  Claude hook пропущен',
   cursorHookInstalled: file => `✅ Cursor hook → ${file}`,
   cursorHookSkipped: () => '⏭  Cursor hook пропущен',
-  aliasInstalled: file => `✅ alias → ${file}`,
-  aliasKeptCustom: file => `⏭  в ${file} alias с твоими флагами — не трогаем:`,
-  aliasKeptForeign: file => `⚠️  в ${file} внутри наших маркеров чужое содержимое — не трогаем:`,
-  aliasForceHint: () => '   Перезаписать дефолтным alias: geo-guard setup --force-alias',
-  aliasFixByHand: () =>
-    '   Удалять не нам — забери нужное из блока руками и запусти setup снова.',
-  aliasNameChangeSkipped: (kept, requested) =>
-    `   Оставили имя '${kept}', не меняли на '${requested}' — для переименования: --force-alias.`,
   hookCustomKept: () => '   твои настройки хука (timeout и т.п.) сохранены',
-  aliasNameTaken: (requested, used) =>
-    `   '${requested}' занят твоим собственным alias — используем '${used}'.`,
-  aliasRunVia: name => `   Запускай Claude Code через: ${name} …`,
+  aliasBlockReplaced: file =>
+    `✅ старый geo-guard alias-блок убран из ${file} — его заменил shim в PATH`,
   reloadRc: file => `Перечитай rc: source ${file}`,
   reloadRcPowershell: file => `Перечитай профиль: . ${file}`,
-  macosBashProfileHint: () =>
-    '   macOS: login-shell bash читает ~/.bash_profile. Если alias не подхватился — добавь `source ~/.bashrc` в ~/.bash_profile.',
-  aliasSkippedReason: reason => `⏭  alias пропущен: ${reason}`,
-  aliasSkipped: () => '⏭  alias пропущен',
-  cursorAliasSkippedConflict: (name, existing) =>
-    `⏭  alias cursor-agent пропущен: имя '${name}' уже занято — ${existing}`,
-  cursorAliasSkippedMissing: command => `⏭  alias cursor-agent пропущен: ${command} нет в PATH`,
-  cursorAliasInstalled: file => `✅ alias cursor-agent → ${file}`,
-  aliasSkipUserChose: () => 'ты выбрал не создавать alias (имя занято)',
-  aliasSkipAllTaken: name =>
-    `имя '${name}' и запасные (cc/ccg/…) заняты — задай своё: --alias-name <имя>`,
-  setupDone: () => 'Готово. Проверка: geo-guard check && geo-guard claude --version',
+  setupDone: () => 'Готово. Проверка: geo-guard status (в новом терминале, когда запись в PATH подхватится).',
   configPathLine: path => `Конфиг: ${path}`,
+
+  shimInstalled: file => `✅ гейт на запуск → ${file}`,
+  shimUpToDate: file => `✅ гейт на запуск уже на месте: ${file}`,
+  shimKeptCustom: file => `⏭  в ${file} правки за пределами флагов, которые мы умеем читать — не трогаем`,
+  shimKeptForeign: file => `⚠️  ${file} уже существует и это не наш файл — не трогаем`,
+  shimForceHint: () =>
+    '   Пересобрать: geo-guard setup --force-shim (поменять флаги — через --claude-args / --cursor-args)',
+  shimFlagsKept: flags => `   твои флаги сохранены: ${flags}`,
+  shimFlagsSet: flags => `   флаги при каждом запуске: ${flags}`,
+  shimSkipped: () => '⏭  гейт на запуск пропущен',
+  shimSkippedMissing: command => `⏭  гейт на запуск пропущен: ${command} нет в PATH`,
+  pathEntryInstalled: file => `✅ запись в PATH → ${file}`,
+  pathEntryAlreadyPresent: file => `⏭  запись в PATH уже есть в ${file}`,
+  pathEntryKeptForeign: file =>
+    `⚠️  в ${file} внутри наших PATH-маркеров чужое содержимое — не трогаем`,
+  pathEntryLoginFile: file =>
+    `✅ запись в PATH → ${file} (login-shell bash читает именно его, а не ~/.bashrc)`,
+  userPathInstalled: dir =>
+    `✅ ${dir} добавлен в пользовательский PATH (все новые процессы, не только PowerShell)`,
+  userPathAlreadyPresent: dir => `⏭  ${dir} уже есть в пользовательском PATH`,
+  userPathUnavailable: (dir, reason) =>
+    `⚠️  не удалось поправить пользовательский PATH (${reason}) — гейт покрывает только PowerShell; добавь ${dir} туда руками, чтобы покрыть cmd.exe и остальное`,
+  reloadForPath: dir =>
+    `Открой новый терминал, чтобы гейт на запуск заработал — он действует, когда ${dir} есть в PATH.`,
 
   unknownStatusArg: arg => `Неизвестный аргумент status: ${arg}`,
   statusConfigPresent: () => '  ✅ файл конфига найден',
@@ -520,18 +588,38 @@ uninstall options:
   statusHookMissing: () => '  ✖ нашей записи hook нет',
   statusHookFileMissing: () => '  ✖ файла нет — hook не установлен',
   statusHookNotNeeded: () => '  ⏭  инструмента здесь нет — hook не нужен',
-  statusAliasHeader: file => `Alias в shell: ${file}`,
-  statusCursorAliasHeader: file => `Alias cursor-agent: ${file}`,
-  statusAliasNotNeeded: command => `  ⏭  ${command} здесь не установлен — alias не нужен`,
-  statusAliasFileMissing: () => '  ✖ такого rc-файла нет — alias не установлен',
-  statusAliasMissing: () => '  ✖ в этом файле нет geo-guard-блока с alias',
-  statusAliasPristine: (name, command) => `  ✅ alias '${name}' → geo-guard ${command}`,
-  statusAliasCustom: body => `  ✅ alias с твоими флагами: ${body}`,
-  statusAliasForeign: body => `  ✖ в geo-guard-блоке лежит чужое содержимое: ${body}`,
-  statusAliasBroken: body =>
-    `  ✖ у geo-guard-блока нет END-маркера, и чинить его нам нельзя — поправь файл руками: ${body}`,
-  statusAliasBrokenRepairable: body =>
-    `  ✖ у geo-guard-блока нет END-маркера — 'geo-guard setup' его починит: ${body}`,
+  statusAliasLeftoverHeader: () => 'Alias в shell от прошлой версии:',
+  statusAliasLeftover: file =>
+    `  ✖ в ${file} остался старый geo-guard alias-блок — 'geo-guard setup' его уберёт`,
+  statusAliasLeftoverBroken: file =>
+    `  ✖ у старого geo-guard alias-блока в ${file} нет END-маркера, вырезать его нам нельзя — убери руками`,
+  statusShimHeader: dir => `Гейт на запуск (shim в PATH): ${dir}`,
+  statusShimPristine: command => `  ✅ ${command} идёт через geo-guard`,
+  statusShimCustom: (command, flags) =>
+    `  ✅ ${command} идёт через geo-guard, с твоими флагами: ${flags}`,
+  statusShimForeign: file => `  ✖ ${file} — не наш файл, гейт на запуск не установлен`,
+  statusShimMissing: command => `  ✖ shim для ${command} нет`,
+  statusShimNotNeeded: command => `  ⏭  ${command} здесь не установлен — shim не нужен`,
+  statusShimNotFirst: found =>
+    `  ✖ в PATH раньше находится другой бинарь: ${found}. Открой новый терминал или проверь PATH-блок в rc.`,
+  statusShimNotOnPath: dir =>
+    `  ✖ ${dir} нет в PATH этого шелла — гейт установлен, но не действует. Открой новый терминал.`,
+  statusShimNoRealBin: (command, message) =>
+    `  ✖ настоящий ${command} за shim не находится: ${message}`,
+  statusPathHeader: file => `Запись в PATH: ${file}`,
+  statusPathPresent: dir => `  ✅ ${dir} добавлен в PATH`,
+  statusPathMissing: dir => `  ✖ ${dir} не добавлен в PATH в этом файле`,
+  statusPathForeign: () => '  ✖ в geo-guard PATH-блоке лежит чужое содержимое',
+  statusPathFileMissing: () => '  ✖ такого rc-файла нет — запись в PATH не установлена',
+  statusPathAlsoIn: files => `  ✅ и ещё в: ${files}`,
+  statusUserPathHeader: () => 'Пользовательский PATH (Windows):',
+  statusUserPathPresent: dir => `  ✅ ${dir} есть в пользовательском PATH`,
+  statusUserPathMissing: dir =>
+    `  ✖ ${dir} нет в пользовательском PATH — вне PowerShell гейт не действует`,
+  statusUserPathUnknown: reason => `  ⚠️  не удалось прочитать пользовательский PATH: ${reason}`,
+  statusProcessPathPresent: dir => `  ✅ ${dir} есть в PATH текущего процесса`,
+  statusProcessPathMissing: dir =>
+    `  ✖ ${dir} нет в PATH текущего процесса — открой новый терминал`,
   statusCountryHeader: () => 'Страна:',
   statusCountryAllowed: (country, allowed) => `  ✅ ${country} — разрешена (разрешены: ${allowed})`,
   statusCountryNotAllowed: (country, allowed) =>
@@ -560,19 +648,32 @@ uninstall options:
   },
   wrapGeoCheckOk: country => `✅ Geo-check: ${country}`,
   wrapSpawnFailed: (bin, message) => `🚫 geo-guard: не удалось запустить ${bin}: ${message}`,
+  wrapRecursionGuard: envVar =>
+    `🚫 geo-guard: гейт на запуск вызвал сам себя (${envVar} достиг предела). Настоящий бинарь закрыт нашим же shim — укажи его явно: GEO_GUARD_REAL_BIN=/path/to/binary`,
 
   unknownUninstallArg: arg => `Неизвестный аргумент uninstall: ${arg}`,
   hookRemoved: file => `✅ hook убран из ${file}`,
   hookNotFound: () => '⏭  нашего hook в settings.json не найдено',
   cursorHookNotFound: () => '⏭  нашего hook в ~/.cursor/hooks.json не найдено',
   aliasRemoved: file => `✅ alias убран из ${file}`,
+  shimRemoved: file => `✅ гейт на запуск убран: ${file}`,
+  shimsNotFound: () => '⏭  наших shim не найдено',
+  shimKeptOnUninstall: file => `⚠️  ${file} — не наш файл, оставлен как есть, сними сам при желании`,
+  pathEntryRemoved: file => `✅ запись в PATH убрана из ${file}`,
+  pathEntriesNotFound: () => '⏭  наших PATH-блоков в rc не найдено',
+  userPathRemoved: dir => `✅ ${dir} убран из пользовательского PATH`,
+  userPathNotFound: () => '⏭  в пользовательском PATH нашего ничего нет',
+  userPathRemoveFailed: (dir, reason) =>
+    `⚠️  не удалось поправить пользовательский PATH (${reason}) — убери ${dir} оттуда руками`,
+  pathEntryManuallyEdited: file =>
+    `⚠️  в ${file} geo-guard PATH-блок правился вручную — оставлен как есть, сними сам при желании`,
   aliasBlocksNotFound: () => '⏭  наших alias-блоков в rc не найдено',
   aliasBlockManuallyEdited: file =>
     `⚠️  в ${file} geo-guard alias-блок правился вручную — оставлен как есть, сними сам при желании`,
   configKept: path => `⏭  конфиг оставлен (--keep-config): ${path}`,
   removed: item => `✅ удалено: ${item}`,
   configNotFound: () => '⏭  конфиг не найден',
-  uninstallDone: () => 'Готово. Чужие alias (cc/c) и settings.json.bak не трогались.',
+  uninstallDone: () => 'Готово. Твои alias, строки PATH и settings.json.bak не трогались.',
   preuninstallError: message => `geo-guard-ai preuninstall: ${message}`,
 
   invalidConfig: (file, message) => `Невалидный конфиг ${file}: ${message}`,
@@ -582,10 +683,9 @@ uninstall options:
   notAnObject: () => 'в файле не JSON-объект',
   invalidHookRoot: file =>
     `${file}: в файле не JSON-объект. Поправь или убери руками — geo-guard не переписывает чужие данные.`,
-  rcNotWritable: file => `Не могу писать в ${file}. Поправь права или запусти setup с --no-alias.`,
+  rcNotWritable: file => `Не могу писать в ${file}. Поправь права или запусти setup с --no-shim.`,
   notACommand: (word, list) =>
     `У geo-guard нет команды '${word}' (команды: ${list}). Чтобы прогнать через гео-проверку программу с таким именем, скажи явно: geo-guard -- ${word}`,
-  aliasAlreadyExists: (name, existing) => `Уже существует alias '${name}': ${existing}`,
   realBinNotFound: path => `GEO_GUARD_REAL_BIN не найден: ${path}`,
   binNotFound: command => `Не найден бинарь: ${command}`,
   targetIsSelf: command => `Цель указывает на сам geo-guard: ${command}`,

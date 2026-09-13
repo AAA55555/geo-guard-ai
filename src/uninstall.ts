@@ -4,6 +4,9 @@ import { configDir, configPath } from './config'
 import { uninstallClaudeHook } from './claude-hook'
 import { uninstallCursorHook } from './cursor-hook'
 import { uninstallAliasesEverywhere } from './shell-alias'
+import { uninstallPathEntriesEverywhere } from './shell-path'
+import { shimDir, uninstallShimsEverywhere } from './shim'
+import { uninstallUserPathEntry } from './windows-path'
 import { msg } from './i18n'
 
 export type UninstallOptions = Readonly<{
@@ -54,11 +57,16 @@ function parseUninstallArgs(argv: string[]): UninstallOptions {
  * Removes only what geo-guard-ai added:
  * - the UserPromptSubmit hook with geo-guard check / geo-check in ~/.claude/settings.json
  * - the beforeSubmitPrompt hook in ~/.cursor/hooks.json
- * - the alias marker block (and unmanaged claude-geo / geo-guard claude lines)
+ * - the shim executables in ~/.geo-guard/bin (and that directory, if empty)
+ * - the PATH marker block in every rc file, and the ~/.bash_profile block that
+ *   makes a login shell read ~/.bashrc
+ * - the alias marker block from earlier versions (and unmanaged claude-geo /
+ *   geo-guard claude lines)
  * - config.json (+ the empty config directory)
  *
- * Leaves untouched: other aliases (cc/c), the rest of settings.json / hooks.json,
- * and both .bak files.
+ * Leaves untouched: the user's own aliases and PATH lines, a file in the shim
+ * directory we did not write, the rest of settings.json / hooks.json, and both
+ * .bak files.
  */
 export async function runUninstall(argv: string[] = []): Promise<void> {
   const opts = parseUninstallArgs(argv)
@@ -76,6 +84,45 @@ export async function runUninstall(argv: string[] = []): Promise<void> {
     log(quiet, msg().hookRemoved(cursorHook.file))
   } else {
     log(quiet, msg().cursorHookNotFound())
+  }
+
+  const shims = uninstallShimsEverywhere()
+  const removedShims = shims.filter(shim => shim.removed)
+  for (const shim of removedShims) {
+    log(quiet, msg().shimRemoved(shim.file))
+  }
+  for (const shim of shims.filter(shim => shim.foreign)) {
+    log(quiet, msg().shimKeptOnUninstall(shim.file))
+  }
+  if (removedShims.length === 0 && shims.every(shim => !shim.foreign)) {
+    log(quiet, msg().shimsNotFound())
+  }
+
+  const pathResults = uninstallPathEntriesEverywhere()
+  const pathRemoved = pathResults.filter(entry => entry.changed)
+  for (const entry of pathRemoved) {
+    log(quiet, msg().pathEntryRemoved(entry.file))
+  }
+  const pathKept = pathResults.filter(entry => entry.modified)
+  for (const entry of pathKept) {
+    log(quiet, msg().pathEntryManuallyEdited(entry.file))
+  }
+  if (pathRemoved.length === 0 && pathKept.length === 0) {
+    log(quiet, msg().pathEntriesNotFound())
+  }
+
+  // The other half of the Windows gate: setup puts the shim directory into
+  // HKCU\Environment, and a leftover entry there would keep pointing at a
+  // directory this very run is deleting.
+  if (process.platform === 'win32') {
+    const userPath = uninstallUserPathEntry(shimDir())
+    if (userPath.outcome === 'removed') {
+      log(quiet, msg().userPathRemoved(userPath.dir))
+    } else if (userPath.outcome === 'unavailable') {
+      log(quiet, msg().userPathRemoveFailed(userPath.dir, userPath.detail))
+    } else {
+      log(quiet, msg().userPathNotFound())
+    }
   }
 
   const aliasResults = uninstallAliasesEverywhere()
@@ -108,12 +155,14 @@ export async function runUninstall(argv: string[] = []): Promise<void> {
   }
 
   if (!quiet) {
-    if (aliases.length > 0) {
-      const file = aliases[0]?.file ?? ''
-      if (file.toLowerCase().endsWith('.ps1')) {
-        console.log(msg().reloadRcPowershell(file))
+    // Whichever rc we actually changed: the shell still has the old PATH (or
+    // the old alias) in memory until it re-reads one of them.
+    const touched = pathRemoved[0]?.file ?? aliases[0]?.file ?? ''
+    if (touched) {
+      if (touched.toLowerCase().endsWith('.ps1')) {
+        console.log(msg().reloadRcPowershell(touched))
       } else {
-        console.log(msg().reloadRc(file))
+        console.log(msg().reloadRc(touched))
       }
     }
     console.log(msg().uninstallDone())
