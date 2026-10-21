@@ -242,6 +242,8 @@ which claude       # should print ~/.geo-guard/bin/claude
 
 `status` does not just look for files: it checks that the shim directory is on the `PATH` of the shell you are in, and that it comes **before** the real binary. That is the check that catches "setup ran, but this terminal started before it did".
 
+**If bare `claude` slips past the gate while `geo-guard claude` still works** (the shim and the rc's `PATH` block are both in place, but `which claude` in a real terminal still does not print `~/.geo-guard/bin/claude`) — something *after* your rc finishes loading is rewriting `PATH` and pushing our directory back. This is usually a version-manager hook (nvm, volta, asdf, fnm, mise) or direnv that rewrites `PATH` on every `cd` or before every prompt (`precmd`/`chpwd`), not just once at shell start. `geo-guard status` run in the already-broken terminal will show this — it looks at the live `PATH` at call time, not at the rc file's contents. The fix is in that hook's behavior (moving the geo-guard-ai block further down in the rc will not help if the hook re-fires on every prompt anyway); find which tool is doing it and configure it to leave an already-set `PATH` alone. A personal `alias claude=...` papers over this for one interactive command, but not for scripts, a Makefile, or cron — exactly what the shim exists to cover.
+
 ## Cursor
 
 Cursor (the IDE chat and `cursor-agent`) reads Claude Code's hook configs by itself — `~/.claude/settings.json` and the project-level equivalents — and imports any hooks it finds there. This is a one-way, load-time import, not a sync; it's controlled by Cursor's own **Third-Party Imports** setting (on by default).
